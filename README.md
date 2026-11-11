@@ -6,11 +6,13 @@ A single self-contained web page that indexes the **top ~300 open-source robotic
 - **📈 Growth & Analytics** — how the industry compounded over time (cumulative projects & stars,
   2010→present), most-starred projects, projects by country, language and sub-field, plus external
   job-market context.
-- **🖼️ Project Collage** — all 300 projects packed into one screen as a **fisheye mosaic**: hover to
-  magnify a tile while neighbors squeeze aside, driven by springs for a fluid, dock-style feel.
-- **🕸️ Topic Explorer** — a force-directed **node graph** clustered by sub-field and connected by shared
-  topics (nearest-neighbor style). Node size = contributor count (how big the project is), with a
-  **trending heatmap** rendered as blended metaball blobs overlaid on the graph.
+- **🖼️ Project Collage** — all 300 projects packed into one screen; a **radial magnifying lens** follows
+  the cursor, bulging the tile underneath while neighbors distort like glass (spring-smoothed).
+- **🕸️ Topic Explorer** — a **3D force-directed graph** (TRON-style neon glow, depth-of-field, arc
+  connectors) clustered by sub-field and linked by shared topics (nearest-neighbor). Node size =
+  contributor count; a **trending heatmap** of blended metaball blobs overlays the graph. Drag to orbit,
+  scroll to zoom, click a node to turn the "planet" so it faces you, and **type to reshape the network**
+  (matches stay, the rest fall away).
 
 Everything is one `index.html` with the data inlined — no build step, no server, works offline (the
 project thumbnail images and the live page both hotlink GitHub's social-preview endpoint; a generated

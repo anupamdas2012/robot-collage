@@ -209,7 +209,7 @@
           <button data-v="on" class="active">Trending heatmap: on</button>
           <button data-v="off">off</button>
         </span>
-        <span class="hint">Drag to pan · scroll to zoom · hover a node for details</span>
+        <span class="hint">Drag to orbit · scroll to zoom · click to center · type to reshape</span>
       </div>
       <div class="glegend" id="glegend"></div>
       <div class="heatbar" id="heatbar">Trending intensity
@@ -548,12 +548,14 @@ function setNavH(){ const n=document.querySelector('nav.views');
   document.documentElement.style.setProperty('--navh', (n?n.offsetHeight:64)+'px'); }
 
 // ============================================================ FISHEYE MOSAIC
-const AMP=1.9, SIGX=1.7, SIGY=1.5;
+// Radial magnifying lens: static grid; the area under the cursor bulges/magnifies
+// like glass, nearby tiles distort radially, outside the lens stays put.
+const LENS={R:205, MAG:3.0};
 const M={inited:false, tiles:[], cols:0, rows:0, cellW:0, cellH:0, W:0, H:0,
-  sx:makeSpring(0,0.28,0.6), sy:makeSpring(0,0.28,0.6), st:makeSpring(0,0.16,0.68),
-  running:false, hover:-1, cat:'All', q:''};
+  lx:makeSpring(0,0.5,0.5), ly:makeSpring(0,0.5,0.5), ls:makeSpring(0,0.22,0.72),
+  dirty:new Set(), running:false, cat:'All', q:''};
 function mosaicGrid(W,H,N){ // choose cols×rows (divisor of N) closest to viewport aspect
-  const target=W/H; let best=null;
+  let best=null;
   for(let cols=1; cols<=N; cols++){ if(N%cols) continue; const rows=N/cols;
     const cw=W/cols, ch=H/rows; const score=Math.abs((cw/ch)-1.25); // prefer slightly landscape cells
     if(!best||score<best.score) best={cols,rows,score}; }
@@ -564,14 +566,18 @@ function computeMosaicGrid(){
   M.W=stage.clientWidth; M.H=stage.clientHeight;
   const g=mosaicGrid(M.W, M.H, M.tiles.length);
   M.cols=g.cols; M.rows=g.rows; M.cellW=M.W/g.cols; M.cellH=M.H/g.rows;
-  M.tiles.forEach((t,i)=>{ t.c=i%M.cols; t.r=Math.floor(i/M.cols); });
-  layoutMosaic(true);
+  M.dirty.clear();
+  M.tiles.forEach((t,i)=>{ t.c=i%M.cols; t.r=Math.floor(i/M.cols);
+    t.tlx=t.c*M.cellW; t.tly=t.r*M.cellH; t.cx=t.tlx+M.cellW/2; t.cy=t.tly+M.cellH/2;
+    t.base=`translate(${t.tlx.toFixed(1)}px,${t.tly.toFixed(1)}px)`;
+    const st=t.el.style; st.width=M.cellW.toFixed(2)+'px'; st.height=M.cellH.toFixed(2)+'px';
+    st.transform=t.base; st.zIndex=''; t._big=false; t.el.classList.remove('big'); });
 }
 function buildMosaic(){
   const stage=document.getElementById('collageStage');
   const mount=document.getElementById('mosaic'); mount.innerHTML='';
   // order: cluster by category, then by stars (prettier, meaningful blocks)
-  const order=DATA.repos.map((p,i)=>p).slice().sort((a,b)=>
+  const order=DATA.repos.slice().sort((a,b)=>
     (DATA.catOrder.indexOf(a.category)-DATA.catOrder.indexOf(b.category)) || (b.stars-a.stars));
   M.tiles=order.map(p=>{
     const el=document.createElement('div'); el.className='mtile';
@@ -581,40 +587,38 @@ function buildMosaic(){
       `<div class="ms">★ ${fmtK(p.stars)} · ${esc(p.category)}</div></div>`;
     el.addEventListener('click', ()=>window.open(p.url,'_blank','noopener'));
     mount.appendChild(el);
-    return {el, p, og:ogURL(p.full_name), c:0, r:0, loaded:false};
+    return {el, p, og:ogURL(p.full_name)};
   });
   computeMosaicGrid();
   // staggered image load to avoid request bursts
   let i=0; (function wave(){ for(let k=0;k<16 && i<M.tiles.length;k++,i++){ const t=M.tiles[i];
     const img=new Image(); img.onload=(function(t){return ()=>{ t.el.style.backgroundImage=`url("${t.og}")`;
-      t.loaded=true; const ph=t.el.querySelector('.ph'); if(ph) ph.remove(); };})(t); img.src=t.og; }
+      const ph=t.el.querySelector('.ph'); if(ph) ph.remove(); };})(t); img.src=t.og; }
     if(i<M.tiles.length) setTimeout(wave,130); })();
-  stage.onmousemove=e=>{ const r=stage.getBoundingClientRect();
-    M.sx.target=Math.max(0,Math.min(M.cols, (e.clientX-r.left)/M.cellW));
-    M.sy.target=Math.max(0,Math.min(M.rows, (e.clientY-r.top)/M.cellH));
-    M.st.target=1; const c=Math.min(M.cols-1,Math.floor(M.sx.target)), rr=Math.min(M.rows-1,Math.floor(M.sy.target));
-    M.hover=rr*M.cols+c; startMosaic(); };
-  stage.onmouseleave=()=>{ M.st.target=0; M.hover=-1; startMosaic(); };
+  stage.onmousemove=e=>{ const r=stage.getBoundingClientRect(); const mx=e.clientX-r.left, my=e.clientY-r.top;
+    if(M.ls.value<0.02){ M.lx.value=M.lx.target=mx; M.ly.value=M.ly.target=my; } // snap on enter
+    else { M.lx.target=mx; M.ly.target=my; }
+    M.ls.target=1; startMosaic(); };
+  stage.onmouseleave=()=>{ M.ls.target=0; startMosaic(); };
   M.inited=true;
 }
-function layoutMosaic(force){
-  const {cols,rows,W,H,cellW,cellH}=M, fx=M.sx.value, fy=M.sy.value, s=M.st.value;
-  const cw=new Array(cols); let sw=0;
-  for(let c=0;c<cols;c++){ const d=(c+0.5)-fx; cw[c]=1+AMP*s*Math.exp(-d*d/(2*SIGX*SIGX)); sw+=cw[c]; }
-  const colW=new Array(cols), colX=new Array(cols); let x=0;
-  for(let c=0;c<cols;c++){ colW[c]=cw[c]/sw*W; colX[c]=x; x+=colW[c]; }
-  const rh=new Array(rows); let sh=0;
-  for(let r=0;r<rows;r++){ const d=(r+0.5)-fy; rh[r]=1+AMP*s*Math.exp(-d*d/(2*SIGY*SIGY)); sh+=rh[r]; }
-  const rowH=new Array(rows), rowY=new Array(rows); let y=0;
-  for(let r=0;r<rows;r++){ rowH[r]=rh[r]/sh*H; rowY[r]=y; y+=rowH[r]; }
-  const bigW=cellW*1.55;
-  for(const t of M.tiles){ const w=colW[t.c], h=rowH[t.r];
-    const st=t.el.style; st.transform=`translate(${colX[t.c].toFixed(1)}px,${rowY[t.r].toFixed(1)}px)`;
-    st.width=w.toFixed(1)+'px'; st.height=h.toFixed(1)+'px';
-    const big=w>bigW; if(big!==t._big){ t.el.classList.toggle('big',big); t._big=big; } }
+function resetTile(t){ t.el.style.transform=t.base; t.el.style.zIndex='';
+  if(t._big){ t.el.classList.remove('big'); t._big=false; } }
+function layoutLens(){
+  const s=M.ls.value, cx=M.lx.value, cy=M.ly.value;
+  if(s<0.002){ if(M.dirty.size){ M.dirty.forEach(resetTile); M.dirty.clear(); } return; }
+  const R=LENS.R, MAG=1+(LENS.MAG-1)*s, cW=M.cellW, cH=M.cellH, next=new Set();
+  for(const t of M.tiles){ const dx=t.cx-cx, dy=t.cy-cy; const r=Math.hypot(dx,dy);
+    if(r<R){ const u=r/R; const lr=R*(MAG*u)/(1+(MAG-1)*u); const ratio=r>0.5?lr/r:MAG;
+      const nx = r>0.5 ? cx+dx*ratio : cx, ny = r>0.5 ? cy+dy*ratio : cy, sc=ratio;
+      t.el.style.transform=`translate(${(nx-cW*sc/2).toFixed(1)}px,${(ny-cH*sc/2).toFixed(1)}px) scale(${sc.toFixed(3)})`;
+      t.el.style.zIndex=100+Math.round(sc*20);
+      const big=sc>1.6; if(big!==t._big){ t.el.classList.toggle('big',big); t._big=big; }
+      next.add(t); } }
+  M.dirty.forEach(t=>{ if(!next.has(t)) resetTile(t); }); M.dirty=next;
 }
 function startMosaic(){ if(M.running) return; M.running=true; requestAnimationFrame(stepMosaic); }
-function stepMosaic(){ const a=M.sx.step(), b=M.sy.step(), c=M.st.step(); layoutMosaic();
+function stepMosaic(){ const a=M.lx.step(), b=M.ly.step(), c=M.ls.step(); layoutLens();
   if(a||b||c){ requestAnimationFrame(stepMosaic); } else { M.running=false; } }
 function applyMosaicFilter(){ const q=M.q, cat=M.cat;
   for(const t of M.tiles){ const p=t.p;
@@ -629,44 +633,54 @@ function initCollageControls(){
   document.getElementById('q').addEventListener('input', e=>{ M.q=e.target.value.trim().toLowerCase(); applyMosaicFilter(); });
 }
 
-// ============================================================ TOPIC GRAPH + HEATMAP
+// ============================================================ TOPIC GRAPH (3D / TRON) + HEATMAP
+const FOV=820, R0=240, DOFW=430;
 const G={inited:false, nodes:[], edges:[], hubs:{}, cats:[], W:0, H:0,
-  cam:{x:0,y:0,z:1}, cooling:0, raf:null, needs:false, hover:null, isolate:null,
-  sizeKey:'contributors', heat:true, maxSize:1};
+  cam:{rotX:-0.32, rotY:0.4, dist:700}, camT:null, focus:null, selected:null,
+  cooling:0, raf:null, needs:false, hover:null, isolate:null, dragging:false, autorot:true,
+  sizeKey:'contributors', heat:true, maxSize:1, query:'', labelSet:[]};
 const gcan=()=>document.getElementById('graphCanvas');
 function jaccard(a,b){ if(!a.size||!b.size) return 0; let n=0; for(const x of a) if(b.has(x)) n++; return n/(a.size+b.size-n); }
-function nodeR(p){ return 3.2 + 20*Math.sqrt(sizeVal(p,G.sizeKey)/G.maxSize); }
+function nodeR(p){ return 2.6 + 16*Math.sqrt(sizeVal(p,G.sizeKey)/G.maxSize); }
+function hexRGB(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+const _glow=new Map();
+function glowSprite(color){ if(_glow.has(color)) return _glow.get(color);
+  const S=64, c=document.createElement('canvas'); c.width=c.height=S; const x=c.getContext('2d');
+  const [r,g,b]=hexRGB(color); const gr=x.createRadialGradient(S/2,S/2,0,S/2,S/2,S/2);
+  gr.addColorStop(0,`rgba(${r},${g},${b},0.95)`); gr.addColorStop(0.35,`rgba(${r},${g},${b},0.45)`);
+  gr.addColorStop(1,`rgba(${r},${g},${b},0)`); x.fillStyle=gr; x.fillRect(0,0,S,S);
+  _glow.set(color,c); return c; }
+
 function buildGraph(){
   const stage=document.getElementById('graphStage'); G.W=stage.clientWidth; G.H=stage.clientHeight;
   G.cats=DATA.catOrder.filter(c=>DATA.repos.some(r=>r.category===c));
   G.maxSize=Math.max(1,...DATA.repos.map(p=>sizeVal(p,G.sizeKey)));
-  const R=Math.min(G.W,G.H)*0.34;
-  G.hubs={}; G.cats.forEach((c,i)=>{ const a=(i/G.cats.length)*Math.PI*2 - Math.PI/2;
-    G.hubs[c]={x:G.W/2+Math.cos(a)*R, y:G.H/2+Math.sin(a)*R}; });
+  // category hubs on a fibonacci sphere
+  G.hubs={}; const nc=G.cats.length;
+  G.cats.forEach((c,i)=>{ const y=1-(i+0.5)/nc*2, rad=Math.sqrt(Math.max(0,1-y*y)), th=Math.PI*(3-Math.sqrt(5))*i;
+    G.hubs[c]={x:Math.cos(th)*rad*R0, y:y*R0, z:Math.sin(th)*rad*R0}; });
   G.nodes=DATA.repos.map(p=>{ const h=G.hubs[p.category];
-    return {p, x:h.x+(Math.random()-.5)*60, y:h.y+(Math.random()-.5)*60, vx:0, vy:0,
-      r:nodeR(p), trend:trendingOf(p), tset:new Set((p.topics||[]).map(t=>t.toLowerCase()))}; });
+    return {p, x:h.x+(Math.random()-.5)*70, y:h.y+(Math.random()-.5)*70, z:h.z+(Math.random()-.5)*70,
+      vx:0,vy:0,vz:0, r:nodeR(p), trend:trendingOf(p), tset:new Set((p.topics||[]).map(t=>t.toLowerCase())),
+      _vis:true, sx:0, sy:0, sc:1, zc:1}; });
   // knn edges by topic similarity within category
   const seen=new Set(); G.edges=[];
   G.nodes.forEach((n,i)=>{
     const sims=[];
-    G.nodes.forEach((m,j)=>{
-      if(i===j||m.p.category!==n.p.category) return;
-      const s=jaccard(n.tset,m.tset); if(s>0.05) sims.push([s,j]);
-    });
+    G.nodes.forEach((m,j)=>{ if(i===j||m.p.category!==n.p.category) return;
+      const s=jaccard(n.tset,m.tset); if(s>0.05) sims.push([s,j]); });
     sims.sort((a,b)=>b[0]-a[0]);
-    for(let k=0;k<Math.min(2,sims.length);k++){
-      const j=sims[k][1], key=i<j?(i+'-'+j):(j+'-'+i);
-      if(!seen.has(key)){ seen.add(key); G.edges.push({a:i,b:j,s:sims[k][0]}); }
-    }
+    for(let k=0;k<Math.min(2,sims.length);k++){ const j=sims[k][1], key=i<j?(i+'-'+j):(j+'-'+i);
+      if(!seen.has(key)){ seen.add(key); G.edges.push({a:i,b:j,s:sims[k][0]}); } }
   });
-  // heat svg circles for top trending nodes
   const trend=G.nodes.map((n,i)=>({i,t:n.trend})).sort((a,b)=>b.t-a.t).slice(0,55);
   G.heatNodes=trend.filter(x=>x.t>0.55);
-  buildHeatSVG(); buildLegend();
-  // settle
-  G.cam={x:0,y:0,z:1}; G.cooling=1; G.inited=true; startGraph();
+  computeLabels(); buildHeatSVG(); buildLegend();
+  G.cam={rotX:-0.32, rotY:0.4, dist:700}; G.camT=null; G.focus=null; G.selected=null;
+  G.cooling=1; G.inited=true; startGraph();
 }
+function computeLabels(){ G.labelSet=G.nodes.slice().sort((a,b)=>sizeVal(b.p,G.sizeKey)-sizeVal(a.p,G.sizeKey)).slice(0,12); }
+
 function buildHeatSVG(){
   const layer=document.getElementById('heatLayer');
   layer.innerHTML=`<svg width="100%" height="100%"><defs>
@@ -682,10 +696,10 @@ function buildHeatSVG(){
 function updateHeat(){
   const show=G.heat; const layer=document.getElementById('heatLayer');
   layer.classList.toggle('off',!show); if(!show) return;
-  const {x:cx,y:cy,z}=G.cam;
   for(const hn of G.heatNodes){ const n=G.nodes[hn.i];
-    hn.el.setAttribute('cx',(n.x*z+cx).toFixed(1)); hn.el.setAttribute('cy',(n.y*z+cy).toFixed(1));
-    hn.el.setAttribute('r',(7+hn.t*24)*Math.sqrt(z)); }
+    if(n._vis===false){ hn.el.style.display='none'; continue; } hn.el.style.display='';
+    hn.el.setAttribute('cx',n.sx.toFixed(1)); hn.el.setAttribute('cy',n.sy.toFixed(1));
+    hn.el.setAttribute('r',(6+hn.t*22)*n.sc); }
 }
 function buildLegend(){
   const L=document.getElementById('glegend');
@@ -698,95 +712,148 @@ function buildLegend(){
 }
 function tickGraph(alpha){
   const N=G.nodes;
-  for(let i=0;i<N.length;i++){ const a=N[i];
-    for(let j=i+1;j<N.length;j++){ const b=N[j]; let dx=a.x-b.x, dy=a.y-b.y; let d2=dx*dx+dy*dy;
-      if(d2<1) d2=1; if(d2>90000) continue; const f=Math.min(1800, 2600/d2)*alpha;
-      const d=Math.sqrt(d2); const fx=dx/d*f, fy=dy/d*f; a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy; } }
-  for(const n of N){ const h=G.hubs[n.p.category];
-    n.vx+=(h.x-n.x)*0.012*alpha; n.vy+=(h.y-n.y)*0.012*alpha;
-    n.vx+=(G.W/2-n.x)*0.0012*alpha; n.vy+=(G.H/2-n.y)*0.0012*alpha; }
-  for(const e of G.edges){ const a=N[e.a], b=N[e.b]; let dx=b.x-a.x, dy=b.y-a.y; const d=Math.hypot(dx,dy)||1;
-    const L=40+(1-e.s)*40; const f=(d-L)*0.02*alpha; const fx=dx/d*f, fy=dy/d*f;
-    a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy; }
-  for(const n of N){ n.vx*=0.84; n.vy*=0.84; n.x+=n.vx; n.y+=n.vy; }
+  for(let i=0;i<N.length;i++){ const a=N[i]; if(a._vis===false) continue;
+    for(let j=i+1;j<N.length;j++){ const b=N[j]; if(b._vis===false) continue;
+      let dx=a.x-b.x, dy=a.y-b.y, dz=a.z-b.z; let d2=dx*dx+dy*dy+dz*dz;
+      if(d2<1) d2=1; if(d2>120000) continue; const f=Math.min(1600, 3000/d2)*alpha;
+      const d=Math.sqrt(d2); const fx=dx/d*f, fy=dy/d*f, fz=dz/d*f;
+      a.vx+=fx; a.vy+=fy; a.vz+=fz; b.vx-=fx; b.vy-=fy; b.vz-=fz; } }
+  for(const n of N){ if(n._vis===false) continue; const h=G.hubs[n.p.category];
+    n.vx+=(h.x-n.x)*0.013*alpha; n.vy+=(h.y-n.y)*0.013*alpha; n.vz+=(h.z-n.z)*0.013*alpha;
+    // keep roughly on the sphere shell
+    const L=Math.hypot(n.x,n.y,n.z)||1, pull=(R0-L)*0.01*alpha;
+    n.vx+=n.x/L*pull; n.vy+=n.y/L*pull; n.vz+=n.z/L*pull; }
+  for(const e of G.edges){ const a=N[e.a], b=N[e.b]; if(a._vis===false||b._vis===false) continue;
+    let dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z; const d=Math.hypot(dx,dy,dz)||1;
+    const L=38+(1-e.s)*42; const f=(d-L)*0.02*alpha; const fx=dx/d*f, fy=dy/d*f, fz=dz/d*f;
+    a.vx+=fx; a.vy+=fy; a.vz+=fz; b.vx-=fx; b.vy-=fy; b.vz-=fz; }
+  for(const n of N){ if(n._vis===false) continue; n.vx*=0.85; n.vy*=0.85; n.vz*=0.85; n.x+=n.vx; n.y+=n.vy; n.z+=n.vz; }
 }
-function worldHit(mx,my){ const {x,y,z}=G.cam; const wx=(mx-x)/z, wy=(my-y)/z; let best=null, bd=1e9;
-  for(const n of G.nodes){ const dx=n.x-wx, dy=n.y-wy; const d=dx*dx+dy*dy; const rr=(n.r+4)*(n.r+4);
-    if(d<rr && d<bd){ bd=d; best=n; } } return best; }
+function projXYZ(x,y,z){ const {rotX,rotY,dist}=G.cam;
+  const cY=Math.cos(rotY), sY=Math.sin(rotY), cX=Math.cos(rotX), sX=Math.sin(rotX);
+  const x1=x*cY+z*sY, z1=-x*sY+z*cY, y1=y*cX-z1*sX, z2=y*sX+z1*cX;
+  const zc=z2+dist, sc=FOV/Math.max(60,zc);
+  return {sx:G.W/2+x1*sc, sy:G.H/2+y1*sc, sc, zc}; }
+function project(n){ const p=projXYZ(n.x,n.y,n.z); n.sx=p.sx; n.sy=p.sy; n.sc=p.sc; n.zc=p.zc; }
+function focusOnNode(n){ if(!n) return; G.selected=n; const L=Math.hypot(n.x,n.y,n.z)||1, h=Math.hypot(n.x,n.z);
+  G.camT={rotY:Math.atan2(-n.x,n.z)+Math.PI, rotX:Math.atan2(-n.y,h), dist:Math.max(430, L*2.1)};
+  G.autorot=false; G.needs=true; startGraph(); }
+
 function drawGraph(){
-  const cv=gcan(), ctx=cv.getContext('2d'); const {x,y,z}=G.cam;
-  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height);
-  ctx.setTransform(z*DPR,0,0,z*DPR,x*DPR,y*DPR);
-  const iso=G.isolate, hv=G.hover;
-  const neigh=new Set(); if(hv){ neigh.add(hv); for(const e of G.edges){ if(G.nodes[e.a]===hv)neigh.add(G.nodes[e.b]); if(G.nodes[e.b]===hv)neigh.add(G.nodes[e.a]); } }
-  // edges
-  ctx.lineWidth=0.6/z;
-  for(const e of G.edges){ const a=G.nodes[e.a], b=G.nodes[e.b];
-    const on=(!iso||(a.p.category===iso&&b.p.category===iso)); if(!on) continue;
-    const hl=hv&&(a===hv||b===hv); ctx.strokeStyle=hl?'rgba(140,190,255,.8)':'rgba(130,150,180,.14)';
-    if(hl) ctx.lineWidth=1.4/z; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); if(hl) ctx.lineWidth=0.6/z; }
-  // nodes
-  for(const n of G.nodes){ const dim=(iso&&n.p.category!==iso)||(hv&&!neigh.has(n));
-    ctx.globalAlpha=dim?0.18:1; ctx.fillStyle=catColor(n.p.category);
-    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,6.2832); ctx.fill();
-    if(n===hv){ ctx.globalAlpha=1; ctx.strokeStyle='#fff'; ctx.lineWidth=2/z; ctx.stroke(); } }
-  // labels for large / hovered (font sized in screen px -> divide by z)
-  ctx.globalAlpha=1; ctx.fillStyle='#e9eef5'; ctx.textAlign='center';
-  ctx.font=`600 ${(11/z).toFixed(2)}px system-ui`;
-  for(const n of G.nodes){ if(iso&&n.p.category!==iso) continue;
-    if((n.r*z>15) || n===hv){ ctx.fillText(n.p.name, n.x, n.y-n.r-5/z); } }
-  ctx.setTransform(1,0,0,1,0,0);
+  const cv=gcan(), ctx=cv.getContext('2d');
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  // TRON backdrop
+  ctx.clearRect(0,0,G.W,G.H);
+  const bg=ctx.createRadialGradient(G.W/2,G.H/2,0,G.W/2,G.H/2,Math.max(G.W,G.H)*0.75);
+  bg.addColorStop(0,'#0a1420'); bg.addColorStop(0.6,'#060a12'); bg.addColorStop(1,'#03050a');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,G.W,G.H);
+  ctx.strokeStyle='rgba(60,150,210,0.07)'; ctx.lineWidth=1;
+  for(let i=1;i<=5;i++){ ctx.beginPath(); ctx.arc(G.W/2,G.H/2,i*Math.min(G.W,G.H)*0.085,0,6.2832); ctx.stroke(); }
+  // project
+  for(const n of G.nodes) project(n);
+  const iso=G.isolate, hv=G.hover, sel=G.selected;
+  const vis=n=> n._vis!==false && (!iso||n.p.category===iso);
+  const neigh=new Set(); const anchor=hv||sel;
+  if(anchor){ neigh.add(anchor); for(const e of G.edges){ const a=G.nodes[e.a],b=G.nodes[e.b];
+    if(a===anchor)neigh.add(b); if(b===anchor)neigh.add(a); } }
+  const focusZ = (sel&&vis(sel))?sel.zc : G.cam.dist;
+  const defoc = zc=> Math.min(1, Math.abs(zc-focusZ)/DOFW);
+  // ---- glow pass (additive)
+  ctx.globalCompositeOperation='lighter';
+  // arcs (neon cyan)
+  for(const e of G.edges){ const a=G.nodes[e.a], b=G.nodes[e.b]; if(!vis(a)||!vis(b)) continue;
+    const hl=anchor&&(a===anchor||b===anchor);
+    let mx=(a.x+b.x)/2,my=(a.y+b.y)/2,mz=(a.z+b.z)/2; const ml=Math.hypot(mx,my,mz)||1;
+    const lift=Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z)*0.3, k=1+lift/ml;
+    const cp=projXYZ(mx*k,my*k,mz*k);
+    const df=defoc((a.zc+b.zc)/2);
+    ctx.strokeStyle=hl?`rgba(130,230,255,0.9)`:`rgba(70,170,230,${(0.14*(1-df*0.7)).toFixed(3)})`;
+    ctx.lineWidth=hl?2:1;
+    ctx.beginPath(); ctx.moveTo(a.sx,a.sy); ctx.quadraticCurveTo(cp.sx,cp.sy,b.sx,b.sy); ctx.stroke(); }
+  // node glows, far first
+  const order=G.nodes.filter(vis).sort((p,q)=>q.zc-p.zc);
+  for(const n of order){ const df=defoc(n.zc); const dim=(anchor&&!neigh.has(n))?0.3:1;
+    const sr=Math.max(1,n.r*n.sc); const gr=sr*(2.0+df*5.5);
+    ctx.globalAlpha=(0.55-0.32*df)*dim; ctx.drawImage(glowSprite(catColor(n.p.category)), n.sx-gr, n.sy-gr, gr*2, gr*2); }
+  // ---- core pass (crisp, in-focus nodes)
+  ctx.globalCompositeOperation='source-over';
+  for(const n of order){ const df=defoc(n.zc); if(df>0.6) continue; const dim=(anchor&&!neigh.has(n))?0.3:1;
+    const sr=Math.max(1,n.r*n.sc); ctx.globalAlpha=(1-df*1.3)*dim;
+    ctx.fillStyle='rgba(235,250,255,0.95)'; ctx.beginPath(); ctx.arc(n.sx,n.sy,sr*0.55,0,6.2832); ctx.fill();
+    ctx.globalAlpha=(1-df)*dim; ctx.strokeStyle=catColor(n.p.category); ctx.lineWidth=Math.max(1,sr*0.3);
+    ctx.beginPath(); ctx.arc(n.sx,n.sy,sr,0,6.2832); ctx.stroke(); }
+  // selection ring
+  if(sel&&vis(sel)){ const sr=Math.max(2,sel.r*sel.sc); ctx.globalAlpha=1; ctx.strokeStyle='#8fe8ff';
+    ctx.lineWidth=2; ctx.beginPath(); ctx.arc(sel.sx,sel.sy,sr+6,0,6.2832); ctx.stroke(); }
+  // ---- labels
+  ctx.globalAlpha=1; ctx.textAlign='center'; ctx.font='600 12px system-ui';
+  const lab=new Set(G.labelSet); if(anchor) lab.add(anchor);
+  for(const n of lab){ if(!vis(n)) continue; const sr=Math.max(1,n.r*n.sc);
+    ctx.lineWidth=3.5; ctx.strokeStyle='rgba(4,8,14,0.9)'; ctx.fillStyle=(n===anchor)?'#bfefff':'#dbe7f2';
+    ctx.strokeText(n.p.name, n.sx, n.sy-sr-7); ctx.fillText(n.p.name, n.sx, n.sy-sr-7); }
   updateHeat();
 }
 function startGraph(){ if(G.raf) return; G.raf=requestAnimationFrame(stepGraph); }
 function stepGraph(){
-  if(G.cooling>0.002){ tickGraph(G.cooling); G.cooling*=0.975; G.needs=true; }
-  if(G.needs){ drawGraph(); G.needs=false;
-    G.raf=requestAnimationFrame(stepGraph); }
-  else if(G.cooling>0.002){ G.raf=requestAnimationFrame(stepGraph); }
-  else { G.raf=null; }
+  let busy=false;
+  if(G.cooling>0.002){ tickGraph(G.cooling); G.cooling*=0.976; busy=true; G.needs=true; }
+  if(G.camT){ const c=G.cam, t=G.camT; c.rotX+=(t.rotX-c.rotX)*0.12; c.rotY+=(t.rotY-c.rotY)*0.12; c.dist+=(t.dist-c.dist)*0.12;
+    if(Math.abs(t.rotX-c.rotX)+Math.abs(t.rotY-c.rotY)+Math.abs(t.dist-c.dist)/100<0.01){ c.rotX=t.rotX; c.rotY=t.rotY; c.dist=t.dist; G.camT=null; }
+    busy=true; G.needs=true; }
+  else if(G.autorot && !G.dragging && !G.hover){ G.cam.rotY+=0.0016; busy=true; G.needs=true; }
+  if(G.needs){ drawGraph(); G.needs=false; }
+  if(busy){ G.raf=requestAnimationFrame(stepGraph); } else { G.raf=null; }
 }
 let DPR=Math.min(2, window.devicePixelRatio||1);
 function sizeGraphCanvas(){ const cv=gcan(), st=document.getElementById('graphStage');
   G.W=st.clientWidth; G.H=st.clientHeight; DPR=Math.min(2,window.devicePixelRatio||1);
   cv.width=G.W*DPR; cv.height=G.H*DPR; cv.style.width=G.W+'px'; cv.style.height=G.H+'px'; }
+function worldHit(mx,my){ let best=null, bd=1e9;
+  for(const n of G.nodes){ if(n._vis===false||(G.isolate&&n.p.category!==G.isolate)) continue;
+    const dx=n.sx-mx, dy=n.sy-my; const d=dx*dx+dy*dy; const rr=Math.max(7,n.r*n.sc+5)**2;
+    if(d<rr && n.zc<bd){ bd=n.zc; best=n; } } return best; }
+function applyQuery(q){ G.query=q;
+  if(!q){ for(const n of G.nodes) n._vis=true; }
+  else { for(const n of G.nodes) n._vis=(n.p.full_name+' '+(n.p.desc||'')+' '+(n.p.topics||[]).join(' ')+' '+n.p.category).toLowerCase().includes(q); }
+  G.cooling=Math.max(G.cooling,0.5);
+  if(q){ const first=G.nodes.find(n=>n._vis); if(first) focusOnNode(first); } else { G.selected=null; G.autorot=true; }
+  G.needs=true; startGraph();
+}
 function initGraphControls(){
   const st=document.getElementById('graphStage'); const tip=document.getElementById('gtip');
   let drag=null;
-  st.addEventListener('mousedown', e=>{ drag={x:e.clientX,y:e.clientY,cx:G.cam.x,cy:G.cam.y,moved:false}; });
+  st.addEventListener('mousedown', e=>{ drag={x:e.clientX,y:e.clientY,rx:G.cam.rotX,ry:G.cam.rotY,moved:false}; G.dragging=true; G.camT=null; });
   window.addEventListener('mousemove', e=>{ if(!drag) return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
-    if(Math.abs(dx)+Math.abs(dy)>3) drag.moved=true; G.cam.x=drag.cx+dx; G.cam.y=drag.cy+dy; G.needs=true; startGraph(); });
-  window.addEventListener('mouseup', ()=>{ drag=null; });
+    if(Math.abs(dx)+Math.abs(dy)>3){ drag.moved=true; G.autorot=false; }
+    G.cam.rotY=drag.ry+dx*0.006; G.cam.rotX=Math.max(-1.45,Math.min(1.45,drag.rx+dy*0.006)); G.needs=true; startGraph(); });
+  window.addEventListener('mouseup', ()=>{ drag=null; G.dragging=false; });
   st.addEventListener('mousemove', e=>{ if(drag) return; const r=st.getBoundingClientRect();
     const n=worldHit(e.clientX-r.left, e.clientY-r.top);
     if(n!==G.hover){ G.hover=n; G.needs=true; startGraph(); }
     if(n){ const p=n.p; tip.style.opacity='1';
-      tip.innerHTML=`<div class="gt">${esc(p.name)}</div>`+
-        `<div class="gr">${esc(p.full_name)}</div>`+
+      tip.innerHTML=`<div class="gt">${esc(p.name)}</div><div class="gr">${esc(p.full_name)}</div>`+
         `<div class="gr">★ <b>${fmtN(p.stars)}</b> · ${(p.contributors!=null?('👥 <b>'+fmtN(p.contributors)+'</b> contributors'):('⑂ '+fmtK(p.forks)+' forks'))}</div>`+
-        `<div class="gr">${esc(p.category)} · trending <b>${Math.round(n.trend*100)}</b></div>`;
+        `<div class="gr">${esc(p.category)} · trending <b>${Math.round(n.trend*100)}</b></div>`+
+        `<div class="gr" style="color:var(--muted);margin-top:3px">click to center · double-click to open</div>`;
       let tx=e.clientX+14, ty=e.clientY+14; const tr=tip.getBoundingClientRect();
       if(tx+tr.width>innerWidth-8) tx=e.clientX-tr.width-14; if(ty+tr.height>innerHeight-8) ty=e.clientY-tr.height-14;
       tip.style.left=tx+'px'; tip.style.top=ty+'px'; st.style.cursor='pointer'; }
-    else { tip.style.opacity='0'; st.style.cursor='default'; } });
+    else { tip.style.opacity='0'; st.style.cursor='grab'; } });
   st.addEventListener('mouseleave', ()=>{ tip.style.opacity='0'; if(G.hover){ G.hover=null; G.needs=true; startGraph(); } });
   st.addEventListener('click', e=>{ if(drag&&drag.moved) return; const r=st.getBoundingClientRect();
+    const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) focusOnNode(n); });
+  st.addEventListener('dblclick', e=>{ const r=st.getBoundingClientRect();
     const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) window.open(n.p.url,'_blank','noopener'); });
-  st.addEventListener('wheel', e=>{ e.preventDefault(); const r=st.getBoundingClientRect();
-    const mx=e.clientX-r.left, my=e.clientY-r.top; const f=Math.exp(-e.deltaY*0.0015);
-    const nz=Math.max(0.3,Math.min(4,G.cam.z*f)); const k=nz/G.cam.z;
-    G.cam.x=mx-(mx-G.cam.x)*k; G.cam.y=my-(my-G.cam.y)*k; G.cam.z=nz; G.needs=true; startGraph(); }, {passive:false});
+  st.addEventListener('wheel', e=>{ e.preventDefault(); G.cam.dist=Math.max(300,Math.min(1500,G.cam.dist+e.deltaY*0.6));
+    G.camT=null; G.needs=true; startGraph(); }, {passive:false});
   document.getElementById('gsizeseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
     G.sizeKey=b.dataset.v; document.querySelectorAll('#gsizeseg button').forEach(x=>x.classList.toggle('active',x===b));
-    G.maxSize=Math.max(1,...DATA.repos.map(p=>sizeVal(p,G.sizeKey))); for(const n of G.nodes) n.r=nodeR(n.p);
+    G.maxSize=Math.max(1,...DATA.repos.map(p=>sizeVal(p,G.sizeKey))); for(const n of G.nodes) n.r=nodeR(n.p); computeLabels();
     G.needs=true; startGraph(); };
   document.getElementById('gheatseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
     G.heat=b.dataset.v==='on'; document.querySelectorAll('#gheatseg button').forEach(x=>x.classList.toggle('active',x===b));
     document.getElementById('heatbar').style.display=G.heat?'':'none'; G.needs=true; startGraph(); };
-  document.getElementById('gq').addEventListener('input', e=>{ const q=e.target.value.trim().toLowerCase();
-    if(!q){ G.hover=null; } else { G.hover=G.nodes.find(n=>(n.p.full_name+' '+n.p.desc).toLowerCase().includes(q))||null;
-      if(G.hover){ G.cam.z=1.4; G.cam.x=G.W/2-G.hover.x*G.cam.z; G.cam.y=G.H/2-G.hover.y*G.cam.z; } }
-    G.needs=true; startGraph(); });
+  document.getElementById('gq').addEventListener('input', e=>{ applyQuery(e.target.value.trim().toLowerCase()); });
 }
 
 // ============================================================ VIEWS
