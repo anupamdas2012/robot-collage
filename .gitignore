@@ -1,0 +1,5 @@
+.context/
+.gstack/
+__pycache__/
+*.pyc
+.DS_Store
