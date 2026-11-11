@@ -129,6 +129,13 @@
   .mtile .lab .ln{font-size:13px; font-weight:700; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .mtile .lab .ms{font-size:11px; color:#cfd8e3; font-variant-numeric:tabular-nums; margin-top:1px}
   .mtile.dim{filter:grayscale(.7) brightness(.45)}
+  .mtile .tint{position:absolute; inset:0; pointer-events:none; mix-blend-mode:multiply; opacity:0; transition:opacity .3s}
+  #collageStage.chroma .mtile .tint{opacity:.93}
+  #collageStage.chroma .mtile{box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)}
+  #mlegend{max-width:none}
+  #mlegend .swatches{display:flex; gap:0; margin:4px 0 2px; border-radius:4px; overflow:hidden}
+  #mlegend .sw{width:16px; height:11px}
+  #mlegend .ramp{height:9px; border-radius:4px; margin-top:4px; background:linear-gradient(90deg,#3a3a3a,#efefef)}
 
   /* ---- topic graph + metaball heatmap ---- */
   #graphStage{position:absolute; inset:0}
@@ -188,9 +195,14 @@
       <div class="hud top">
         <input id="q" type="search" placeholder="Search to spotlight…" autocomplete="off">
         <select id="fcat"></select>
-        <span class="hint">Hover to magnify · click to open repo · 300 projects packed to fill the screen</span>
+        <span class="seg2" id="mchromaseg">
+          <button data-v="on" class="active">Chroma</button>
+          <button data-v="off">Images</button>
+        </span>
+        <span class="hint">Hover = magnifier · click = open repo · hue = sub-field · brightness = stars</span>
       </div>
       <div id="mosaic"></div>
+      <div class="glegend" id="mlegend"></div>
     </div>
   </section>
 
@@ -551,9 +563,18 @@ function setNavH(){ const n=document.querySelector('nav.views');
 // Radial magnifying lens: static grid; the area under the cursor bulges/magnifies
 // like glass, nearby tiles distort radially, outside the lens stays put.
 const LENS={R:205, MAG:3.0};
+// Meaningful chroma field: HUE = sub-field (ordered around the wheel), LIGHTNESS = stars.
+const CHUE={'Aerial & Drones':30,'Autonomous Driving':52,'Navigation':120,'Simulation':165,
+  'SLAM & Perception':200,'Framework & Middleware':222,'Learning & Control':268,
+  'Manipulation':318,'Legged & Humanoid':352,'Robotics (general)':220};
 const M={inited:false, tiles:[], cols:0, rows:0, cellW:0, cellH:0, W:0, H:0,
   lx:makeSpring(0,0.5,0.5), ly:makeSpring(0,0.5,0.5), ls:makeSpring(0,0.22,0.72),
-  dirty:new Set(), running:false, cat:'All', q:''};
+  dirty:new Set(), running:false, cat:'All', q:'', chromaOn:true, Lmin:0, Lmax:1};
+function chromaColor(p){ const h=CHUE[p.category]||220, gen=p.category==='Robotics (general)';
+  const t=Math.max(0,Math.min(1,(Math.log(p.stars+1)-M.Lmin)/(M.Lmax-M.Lmin)));
+  return `hsl(${h} ${gen?10:64}% ${(37+t*39).toFixed(0)}%)`; }
+function catHueOrder(){ return [...new Set(DATA.repos.map(r=>r.category))]
+  .sort((a,b)=>(CHUE[a]||999)-(CHUE[b]||999)); }
 function mosaicGrid(W,H,N){ // choose cols×rows (divisor of N) closest to viewport aspect
   let best=null;
   for(let cols=1; cols<=N; cols++){ if(N%cols) continue; const rows=N/cols;
@@ -567,7 +588,8 @@ function computeMosaicGrid(){
   const g=mosaicGrid(M.W, M.H, M.tiles.length);
   M.cols=g.cols; M.rows=g.rows; M.cellW=M.W/g.cols; M.cellH=M.H/g.rows;
   M.dirty.clear();
-  M.tiles.forEach((t,i)=>{ t.c=i%M.cols; t.r=Math.floor(i/M.cols);
+  // column-major so sub-field hue bands sweep left->right, popularity ramps top->bottom
+  M.tiles.forEach((t,i)=>{ t.c=Math.floor(i/M.rows); t.r=i%M.rows;
     t.tlx=t.c*M.cellW; t.tly=t.r*M.cellH; t.cx=t.tlx+M.cellW/2; t.cy=t.tly+M.cellH/2;
     t.base=`translate(${t.tlx.toFixed(1)}px,${t.tly.toFixed(1)}px)`;
     const st=t.el.style; st.width=M.cellW.toFixed(2)+'px'; st.height=M.cellH.toFixed(2)+'px';
@@ -576,19 +598,24 @@ function computeMosaicGrid(){
 function buildMosaic(){
   const stage=document.getElementById('collageStage');
   const mount=document.getElementById('mosaic'); mount.innerHTML='';
-  // order: cluster by category, then by stars (prettier, meaningful blocks)
+  const vals=DATA.repos.map(r=>Math.log(r.stars+1)); M.Lmin=Math.min(...vals); M.Lmax=Math.max(...vals);
+  // ordered by sub-field hue (spectrum), then stars -> a meaningful chroma field
+  const ho=catHueOrder();
   const order=DATA.repos.slice().sort((a,b)=>
-    (DATA.catOrder.indexOf(a.category)-DATA.catOrder.indexOf(b.category)) || (b.stars-a.stars));
+    (ho.indexOf(a.category)-ho.indexOf(b.category)) || (b.stars-a.stars));
   M.tiles=order.map(p=>{
     const el=document.createElement('div'); el.className='mtile';
-    el.style.backgroundColor=catColor(p.category);
+    const col=chromaColor(p); el.style.backgroundColor=col;
     el.innerHTML=`<div class="ph">${esc(p.name)}</div>`+
       `<div class="lab"><div class="ln">${esc(p.name)}</div>`+
-      `<div class="ms">★ ${fmtK(p.stars)} · ${esc(p.category)}</div></div>`;
+      `<div class="ms">★ ${fmtK(p.stars)} · ${esc(p.category)}</div></div>`+
+      `<div class="tint" style="background:${col}"></div>`;
     el.addEventListener('click', ()=>window.open(p.url,'_blank','noopener'));
     mount.appendChild(el);
     return {el, p, og:ogURL(p.full_name)};
   });
+  stage.classList.toggle('chroma', M.chromaOn);
+  buildMosaicLegend();
   computeMosaicGrid();
   // staggered image load to avoid request bursts
   let i=0; (function wave(){ for(let k=0;k<16 && i<M.tiles.length;k++,i++){ const t=M.tiles[i];
@@ -625,12 +652,24 @@ function applyMosaicFilter(){ const q=M.q, cat=M.cat;
     const ok=(cat==='All'||p.category===cat) &&
       (!q || (p.full_name+' '+p.desc+' '+(p.topics||[]).join(' ')+' '+p.language).toLowerCase().includes(q));
     t.el.classList.toggle('dim', !ok); } }
+function buildMosaicLegend(){
+  const L=document.getElementById('mlegend'); if(!L) return;
+  const ho=catHueOrder();
+  L.innerHTML=`<div class="ttl">Hue = sub-field · spectrum →</div>`+
+    `<div class="swatches">`+ho.map(c=>`<span class="sw" title="${esc(c)}" style="background:hsl(${CHUE[c]||220} ${c==='Robotics (general)'?10:64}% 55%)"></span>`).join('')+`</div>`+
+    `<div class="ttl" style="margin-top:7px">Lightness = stars</div><div class="ramp"></div>`+
+    `<div class="row" style="justify-content:space-between;cursor:default;margin-top:2px"><span style="font-size:10px;color:var(--muted)">fewer ★</span><span style="font-size:10px;color:var(--muted)">more ★</span></div>`;
+}
 function initCollageControls(){
   const sel=document.getElementById('fcat');
   sel.innerHTML=['All',...DATA.catOrder.filter(c=>DATA.repos.some(r=>r.category===c))]
     .map(c=>`<option value="${esc(c)}">${c==='All'?'All sub-fields':esc(c)}</option>`).join('');
   sel.onchange=e=>{ M.cat=e.target.value; applyMosaicFilter(); };
   document.getElementById('q').addEventListener('input', e=>{ M.q=e.target.value.trim().toLowerCase(); applyMosaicFilter(); });
+  document.getElementById('mchromaseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
+    M.chromaOn=b.dataset.v==='on'; document.querySelectorAll('#mchromaseg button').forEach(x=>x.classList.toggle('active',x===b));
+    document.getElementById('collageStage').classList.toggle('chroma', M.chromaOn);
+    document.getElementById('mlegend').style.display=M.chromaOn?'':'none'; };
 }
 
 // ============================================================ TOPIC GRAPH (3D / TRON) + HEATMAP
