@@ -213,6 +213,10 @@
       <canvas id="graphCanvas"></canvas>
       <div class="hud top">
         <input id="gq" type="search" placeholder="Search projects…" autocomplete="off">
+        <span class="seg2" id="gmodeseg">
+          <button data-v="3d" class="active">3D</button>
+          <button data-v="2d">2D</button>
+        </span>
         <span class="seg2" id="gsizeseg">
           <button data-v="contributors" class="active">Size: contributors</button>
           <button data-v="stars">stars</button>
@@ -675,7 +679,9 @@ function initCollageControls(){
 // ============================================================ TOPIC GRAPH (3D / TRON) + HEATMAP
 const FOV=820, R0=240, DOFW=430;
 const G={inited:false, nodes:[], edges:[], hubs:{}, cats:[], W:0, H:0,
-  cam:{rotX:-0.32, rotY:0.4, dist:700}, camT:null, focus:null, selected:null,
+  cam:{rotX:-0.32, rotY:0.4, dist:700}, tgt:{rotX:-0.32, rotY:0.4, dist:700},
+  panX:0, panY:0, panTX:0, panTY:0, flatAmt:0, flatTarget:0, mode:'3d',
+  focus:null, selected:null,
   cooling:0, raf:null, needs:false, hover:null, isolate:null, dragging:false, autorot:true,
   sizeKey:'contributors', heat:true, maxSize:1, query:'', labelSet:[]};
 const gcan=()=>document.getElementById('graphCanvas');
@@ -715,7 +721,9 @@ function buildGraph(){
   const trend=G.nodes.map((n,i)=>({i,t:n.trend})).sort((a,b)=>b.t-a.t).slice(0,55);
   G.heatNodes=trend.filter(x=>x.t>0.55);
   computeLabels(); buildHeatSVG(); buildLegend();
-  G.cam={rotX:-0.32, rotY:0.4, dist:700}; G.camT=null; G.focus=null; G.selected=null;
+  G.cam={rotX:-0.32, rotY:0.4, dist:700}; G.tgt={rotX:-0.32, rotY:0.4, dist:700};
+  G.panX=G.panY=G.panTX=G.panTY=0; G.flatAmt=G.flatTarget=(G.mode==='2d'?1:0);
+  G.focus=null; G.selected=null;
   G.cooling=1; G.inited=true; startGraph();
 }
 function computeLabels(){ G.labelSet=G.nodes.slice().sort((a,b)=>sizeVal(b.p,G.sizeKey)-sizeVal(a.p,G.sizeKey)).slice(0,12); }
@@ -747,6 +755,11 @@ function buildLegend(){
   L.onclick=e=>{ const row=e.target.closest('.row'); if(!row) return; const c=row.dataset.c;
     G.isolate = (G.isolate===c)?null:c;
     L.querySelectorAll('.row').forEach(r=>r.classList.toggle('off', G.isolate && r.dataset.c!==G.isolate));
+    if(G.isolate){ // rotate the chunk into view, centered on its most prominent node
+      let big=null; for(const n of G.nodes){ if(n.p.category!==G.isolate) continue;
+        if(!big || sizeVal(n.p,G.sizeKey)>sizeVal(big.p,G.sizeKey)) big=n; }
+      if(big) focusOnNode(big);
+    }
     G.needs=true; startGraph(); };
 }
 function tickGraph(alpha){
@@ -768,15 +781,17 @@ function tickGraph(alpha){
     a.vx+=fx; a.vy+=fy; a.vz+=fz; b.vx-=fx; b.vy-=fy; b.vz-=fz; }
   for(const n of N){ if(n._vis===false) continue; n.vx*=0.85; n.vy*=0.85; n.vz*=0.85; n.x+=n.vx; n.y+=n.vy; n.z+=n.vz; }
 }
-function projXYZ(x,y,z){ const {rotX,rotY,dist}=G.cam;
+function projXYZ(x,y,z){ const {rotX,rotY,dist}=G.cam; const ze=z*(1-G.flatAmt);
   const cY=Math.cos(rotY), sY=Math.sin(rotY), cX=Math.cos(rotX), sX=Math.sin(rotX);
-  const x1=x*cY+z*sY, z1=-x*sY+z*cY, y1=y*cX-z1*sX, z2=y*sX+z1*cX;
+  const x1=x*cY+ze*sY, z1=-x*sY+ze*cY, y1=y*cX-z1*sX, z2=y*sX+z1*cX;
   const zc=z2+dist, sc=FOV/Math.max(60,zc);
-  return {sx:G.W/2+x1*sc, sy:G.H/2+y1*sc, sc, zc}; }
+  return {sx:G.W/2+G.panX+x1*sc, sy:G.H/2+G.panY+y1*sc, sc, zc}; }
 function project(n){ const p=projXYZ(n.x,n.y,n.z); n.sx=p.sx; n.sy=p.sy; n.sc=p.sc; n.zc=p.zc; }
-function focusOnNode(n){ if(!n) return; G.selected=n; const L=Math.hypot(n.x,n.y,n.z)||1, h=Math.hypot(n.x,n.z);
-  G.camT={rotY:Math.atan2(-n.x,n.z)+Math.PI, rotX:Math.atan2(-n.y,h), dist:Math.max(430, L*2.1)};
-  G.autorot=false; G.needs=true; startGraph(); }
+function focusOnNode(n){ if(!n) return; G.selected=n; G.autorot=false;
+  if(G.mode==='2d'){ const p=projXYZ(n.x,n.y,n.z); G.panTX=G.panX+(G.W/2-p.sx); G.panTY=G.panY+(G.H/2-p.sy); }
+  else { const L=Math.hypot(n.x,n.y,n.z)||1, h=Math.hypot(n.x,n.z);
+    G.tgt.rotY=Math.atan2(-n.x,n.z)+Math.PI; G.tgt.rotX=Math.atan2(-n.y,h); G.tgt.dist=Math.max(430,L*2.1); }
+  G.needs=true; startGraph(); }
 
 function drawGraph(){
   const cv=gcan(), ctx=cv.getContext('2d');
@@ -797,7 +812,7 @@ function drawGraph(){
     if(a===anchor)neigh.add(b); if(b===anchor)neigh.add(a); } }
   // depth-of-field: nearest to camera = crisp, blur grows with depth (one-sided)
   const nearZ = G.cam.dist - R0*0.9;
-  const defoc = zc=> Math.max(0, Math.min(1, (zc-nearZ)/DOFW));
+  const defoc = zc=> Math.max(0, Math.min(1, (zc-nearZ)/DOFW)) * (1-G.flatAmt);
   // ---- glow pass (additive)
   ctx.globalCompositeOperation='lighter';
   // arcs (neon cyan)
@@ -837,10 +852,15 @@ function startGraph(){ if(G.raf) return; G.raf=requestAnimationFrame(stepGraph);
 function stepGraph(){
   let busy=false;
   if(G.cooling>0.002){ tickGraph(G.cooling); G.cooling*=0.976; busy=true; G.needs=true; }
-  if(G.camT){ const c=G.cam, t=G.camT; c.rotX+=(t.rotX-c.rotX)*0.12; c.rotY+=(t.rotY-c.rotY)*0.12; c.dist+=(t.dist-c.dist)*0.12;
-    if(Math.abs(t.rotX-c.rotX)+Math.abs(t.rotY-c.rotY)+Math.abs(t.dist-c.dist)/100<0.01){ c.rotX=t.rotX; c.rotY=t.rotY; c.dist=t.dist; G.camT=null; }
+  // gentle auto-rotate advances the TARGET so the motion stays smoothed
+  if(G.autorot && !G.dragging && !G.hover && G.mode==='3d') G.tgt.rotY+=0.0015;
+  // soft easing of camera + pan + flatten toward their targets (softer spin, tweened 2D/3D)
+  const c=G.cam, t=G.tgt, S=0.11;
+  const dr=Math.abs(t.rotX-c.rotX)+Math.abs(t.rotY-c.rotY)+Math.abs(t.dist-c.dist)/200
+    +Math.abs(G.panTX-G.panX)/200+Math.abs(G.panTY-G.panY)/200+Math.abs(G.flatTarget-G.flatAmt);
+  if(dr>0.0005){ c.rotX+=(t.rotX-c.rotX)*S; c.rotY+=(t.rotY-c.rotY)*S; c.dist+=(t.dist-c.dist)*S;
+    G.panX+=(G.panTX-G.panX)*S; G.panY+=(G.panTY-G.panY)*S; G.flatAmt+=(G.flatTarget-G.flatAmt)*0.09;
     busy=true; G.needs=true; }
-  else if(G.autorot && !G.dragging && !G.hover){ G.cam.rotY+=0.0016; busy=true; G.needs=true; }
   if(G.needs){ drawGraph(); G.needs=false; }
   if(busy){ G.raf=requestAnimationFrame(stepGraph); } else { G.raf=null; }
 }
@@ -862,10 +882,12 @@ function applyQuery(q){ G.query=q;
 function initGraphControls(){
   const st=document.getElementById('graphStage'); const tip=document.getElementById('gtip');
   let drag=null;
-  st.addEventListener('mousedown', e=>{ drag={x:e.clientX,y:e.clientY,rx:G.cam.rotX,ry:G.cam.rotY,moved:false}; G.dragging=true; G.camT=null; });
+  st.addEventListener('mousedown', e=>{ drag={x:e.clientX,y:e.clientY,rx:G.tgt.rotX,ry:G.tgt.rotY,px:G.panTX,py:G.panTY,moved:false}; G.dragging=true; });
   window.addEventListener('mousemove', e=>{ if(!drag) return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
     if(Math.abs(dx)+Math.abs(dy)>3){ drag.moved=true; G.autorot=false; }
-    G.cam.rotY=drag.ry-dx*0.006; G.cam.rotX=Math.max(-1.45,Math.min(1.45,drag.rx-dy*0.006)); G.needs=true; startGraph(); });
+    if(G.mode==='2d'){ G.panTX=drag.px+dx; G.panTY=drag.py+dy; }
+    else { G.tgt.rotY=drag.ry-dx*0.006; G.tgt.rotX=Math.max(-1.45,Math.min(1.45,drag.rx-dy*0.006)); }
+    G.needs=true; startGraph(); });
   window.addEventListener('mouseup', ()=>{ drag=null; G.dragging=false; });
   st.addEventListener('mousemove', e=>{ if(drag) return; const r=st.getBoundingClientRect();
     const n=worldHit(e.clientX-r.left, e.clientY-r.top);
@@ -884,8 +906,15 @@ function initGraphControls(){
     const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) focusOnNode(n); });
   st.addEventListener('dblclick', e=>{ const r=st.getBoundingClientRect();
     const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) window.open(n.p.url,'_blank','noopener'); });
-  st.addEventListener('wheel', e=>{ e.preventDefault(); G.cam.dist=Math.max(300,Math.min(1500,G.cam.dist+e.deltaY*0.6));
-    G.camT=null; G.needs=true; startGraph(); }, {passive:false});
+  st.addEventListener('wheel', e=>{ e.preventDefault(); G.tgt.dist=Math.max(300,Math.min(1500,G.tgt.dist+e.deltaY*0.6));
+    G.needs=true; startGraph(); }, {passive:false});
+  document.getElementById('gmodeseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
+    G.mode=b.dataset.v; document.querySelectorAll('#gmodeseg button').forEach(x=>x.classList.toggle('active',x===b));
+    G.flatTarget=(G.mode==='2d')?1:0;
+    if(G.mode==='2d'){ G.autorot=false; G.tgt.rotX=0; G.tgt.rotY=0; G.panTX=0; G.panTY=0; }
+    else { G.autorot=true; G.tgt.rotX=-0.32; }
+    if(G.selected) focusOnNode(G.selected);
+    G.needs=true; startGraph(); };
   document.getElementById('gsizeseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
     G.sizeKey=b.dataset.v; document.querySelectorAll('#gsizeseg button').forEach(x=>x.classList.toggle('active',x===b));
     G.maxSize=Math.max(1,...DATA.repos.map(p=>sizeVal(p,G.sizeKey))); for(const n of G.nodes) n.r=nodeR(n.p); computeLabels();
