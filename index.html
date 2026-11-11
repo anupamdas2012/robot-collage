@@ -865,7 +865,7 @@ function initGraphControls(){
   st.addEventListener('mousedown', e=>{ drag={x:e.clientX,y:e.clientY,rx:G.cam.rotX,ry:G.cam.rotY,moved:false}; G.dragging=true; G.camT=null; });
   window.addEventListener('mousemove', e=>{ if(!drag) return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
     if(Math.abs(dx)+Math.abs(dy)>3){ drag.moved=true; G.autorot=false; }
-    G.cam.rotY=drag.ry+dx*0.006; G.cam.rotX=Math.max(-1.45,Math.min(1.45,drag.rx+dy*0.006)); G.needs=true; startGraph(); });
+    G.cam.rotY=drag.ry-dx*0.006; G.cam.rotX=Math.max(-1.45,Math.min(1.45,drag.rx-dy*0.006)); G.needs=true; startGraph(); });
   window.addEventListener('mouseup', ()=>{ drag=null; G.dragging=false; });
   st.addEventListener('mousemove', e=>{ if(drag) return; const r=st.getBoundingClientRect();
     const n=worldHit(e.clientX-r.left, e.clientY-r.top);
