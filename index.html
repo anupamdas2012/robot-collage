@@ -756,8 +756,9 @@ function drawGraph(){
   const neigh=new Set(); const anchor=hv||sel;
   if(anchor){ neigh.add(anchor); for(const e of G.edges){ const a=G.nodes[e.a],b=G.nodes[e.b];
     if(a===anchor)neigh.add(b); if(b===anchor)neigh.add(a); } }
-  const focusZ = (sel&&vis(sel))?sel.zc : G.cam.dist;
-  const defoc = zc=> Math.min(1, Math.abs(zc-focusZ)/DOFW);
+  // depth-of-field: nearest to camera = crisp, blur grows with depth (one-sided)
+  const nearZ = G.cam.dist - R0*0.9;
+  const defoc = zc=> Math.max(0, Math.min(1, (zc-nearZ)/DOFW));
   // ---- glow pass (additive)
   ctx.globalCompositeOperation='lighter';
   // arcs (neon cyan)
