@@ -680,7 +680,7 @@ const G={inited:false, nodes:[], edges:[], hubs:{}, cats:[], W:0, H:0,
   panX:0, panY:0, panTX:0, panTY:0, flatAmt:0, flatTarget:0, mode:'3d',
   focus:null, selected:null,
   cooling:0, raf:null, needs:false, hover:null, isolate:null, dragging:false, autorot:true,
-  sizeKey:'contributors', heat:true, maxSize:1, maxDist:700, query:'', labelSet:[]};
+  sizeKey:'contributors', heat:true, maxSize:1, maxDist:700, fitR:R0*1.3, fitPending:false, query:'', labelSet:[]};
 const gcan=()=>document.getElementById('graphCanvas');
 function jaccard(a,b){ if(!a.size||!b.size) return 0; let n=0; for(const x of a) if(b.has(x)) n++; return n/(a.size+b.size-n); }
 function nodeR(p){ return 2.6 + 16*Math.sqrt(sizeVal(p,G.sizeKey)/G.maxSize); }
@@ -718,7 +718,7 @@ function buildGraph(){
   const trend=G.nodes.map((n,i)=>({i,t:n.trend})).sort((a,b)=>b.t-a.t).slice(0,55);
   G.heatNodes=trend.filter(x=>x.t>0.55);
   computeLabels(); buildHeatSVG(); buildLegend();
-  G.maxDist=fitDist();
+  G.fitR=R0*1.3; G.maxDist=fitDist(); G.fitPending=true; // remeasured once the sim settles
   G.cam={rotX:-0.32, rotY:0.4, dist:G.maxDist}; G.tgt={rotX:-0.32, rotY:0.4, dist:G.maxDist};
   G.panX=G.panY=G.panTX=G.panTY=0; G.flatAmt=G.flatTarget=(G.mode==='2d'?1:0);
   G.focus=null; G.selected=null;
@@ -779,7 +779,34 @@ function tickGraph(alpha){
     a.vx+=fx; a.vy+=fy; a.vz+=fz; b.vx-=fx; b.vy-=fy; b.vz-=fz; }
   for(const n of N){ if(n._vis===false) continue; n.vx*=0.85; n.vy*=0.85; n.vz*=0.85; n.x+=n.vx; n.y+=n.vy; n.z+=n.vz; }
 }
-function fitDist(){ const Reff=R0*1.18+26; return 2*Reff*FOV/(0.9*Math.min(G.W,G.H)); } // frame cluster to fill canvas
+let FITPAD=52, FITSAFE=1.03; // edge padding (px) + tiny headroom for labels
+function measureFit(){ // recenter the settled cloud on the origin so its projection is symmetric
+  let cx=0,cy=0,cz=0; const N=G.nodes.length||1;
+  for(const n of G.nodes){ cx+=n.x; cy+=n.y; cz+=n.z; } cx/=N; cy/=N; cz/=N;
+  for(const n of G.nodes){ n.x-=cx; n.y-=cy; n.z-=cz; }
+  for(const k in G.hubs){ G.hubs[k].x-=cx; G.hubs[k].y-=cy; G.hubs[k].z-=cz; }
+  let Rmax=1; for(const n of G.nodes){ const r=Math.hypot(n.x,n.y,n.z); if(r>Rmax) Rmax=r; } G.fitR=Rmax; }
+// Measure the real projected extent over a rotation sweep and solve for the distance
+// at which every node edge sits inside (half - padding). Robust to perspective & shape.
+function fitByScan(){
+  const halfX=Math.max(60,G.W/2-FITPAD), halfY=Math.max(60,G.H/2-FITPAD);
+  const rots=[-1.1,-0.32,0.5]; let dist=Math.max(G.fitR*2.2, 200);
+  for(let iter=0; iter<7; iter++){
+    let ox=1, oy=1;
+    for(const rx of rots){ const cX=Math.cos(rx), sX=Math.sin(rx);
+      for(let s=0;s<18;s++){ const ry=s/18*6.2832, cY=Math.cos(ry), sY=Math.sin(ry);
+        for(const n of G.nodes){ const x1=n.x*cY+n.z*sY, z1=-n.x*sY+n.z*cY, y1=n.y*cX-z1*sX, z2=n.y*sX+z1*cX;
+          const sc=FOV/Math.max(60,z2+dist), r=n.r*sc;
+          const ax=Math.abs(x1*sc)+r, ay=Math.abs(y1*sc)+r; if(ax>ox)ox=ax; if(ay>oy)oy=ay; } } }
+    const f=Math.max(ox/halfX, oy/halfY);
+    if(f<=1.002 && f>0.99) break;
+    dist*=f;
+  }
+  return dist*FITSAFE;
+}
+function fitDist(){ if(G.nodes.length && !G.fitPending) return fitByScan();
+  const half=Math.max(60, 0.5*Math.min(G.W,G.H)-FITPAD), k=FOV/half;
+  return (G.fitR||R0*1.3)*Math.sqrt(1+k*k)*FITSAFE; }
 function resetGraph(){ // back to the default view (as on first load), deselect everything
   G.isolate=null; G.selected=null; G.query='';
   const gq=document.getElementById('gq'); if(gq) gq.value='';
@@ -861,6 +888,7 @@ function startGraph(){ if(G.raf) return; G.raf=requestAnimationFrame(stepGraph);
 function stepGraph(){
   let busy=false;
   if(G.cooling>0.002){ tickGraph(G.cooling); G.cooling*=0.976; busy=true; G.needs=true; }
+  else if(G.fitPending){ measureFit(); G.fitPending=false; G.maxDist=fitDist(); G.tgt.dist=G.maxDist; busy=true; G.needs=true; }
   // gentle auto-rotate advances the TARGET so the motion stays smoothed
   if(G.autorot && !G.dragging && !G.hover && G.mode==='3d') G.tgt.rotY+=0.0015;
   // soft easing of camera + pan + flatten toward their targets (softer spin, tweened 2D/3D)
