@@ -680,7 +680,7 @@ const G={inited:false, nodes:[], edges:[], hubs:{}, cats:[], W:0, H:0,
   panX:0, panY:0, panTX:0, panTY:0, flatAmt:0, flatTarget:0, mode:'3d',
   focus:null, selected:null,
   cooling:0, raf:null, needs:false, hover:null, isolate:null, dragging:false, autorot:true,
-  sizeKey:'contributors', heat:true, maxSize:1, query:'', labelSet:[]};
+  sizeKey:'contributors', heat:true, maxSize:1, maxDist:700, query:'', labelSet:[]};
 const gcan=()=>document.getElementById('graphCanvas');
 function jaccard(a,b){ if(!a.size||!b.size) return 0; let n=0; for(const x of a) if(b.has(x)) n++; return n/(a.size+b.size-n); }
 function nodeR(p){ return 2.6 + 16*Math.sqrt(sizeVal(p,G.sizeKey)/G.maxSize); }
@@ -718,7 +718,8 @@ function buildGraph(){
   const trend=G.nodes.map((n,i)=>({i,t:n.trend})).sort((a,b)=>b.t-a.t).slice(0,55);
   G.heatNodes=trend.filter(x=>x.t>0.55);
   computeLabels(); buildHeatSVG(); buildLegend();
-  G.cam={rotX:-0.32, rotY:0.4, dist:700}; G.tgt={rotX:-0.32, rotY:0.4, dist:700};
+  G.maxDist=fitDist();
+  G.cam={rotX:-0.32, rotY:0.4, dist:G.maxDist}; G.tgt={rotX:-0.32, rotY:0.4, dist:G.maxDist};
   G.panX=G.panY=G.panTX=G.panTY=0; G.flatAmt=G.flatTarget=(G.mode==='2d'?1:0);
   G.focus=null; G.selected=null;
   G.cooling=1; G.inited=true; startGraph();
@@ -777,6 +778,17 @@ function tickGraph(alpha){
     const L=38+(1-e.s)*42; const f=(d-L)*0.02*alpha; const fx=dx/d*f, fy=dy/d*f, fz=dz/d*f;
     a.vx+=fx; a.vy+=fy; a.vz+=fz; b.vx-=fx; b.vy-=fy; b.vz-=fz; }
   for(const n of N){ if(n._vis===false) continue; n.vx*=0.85; n.vy*=0.85; n.vz*=0.85; n.x+=n.vx; n.y+=n.vy; n.z+=n.vz; }
+}
+function fitDist(){ const Reff=R0*1.18+26; return 2*Reff*FOV/(0.9*Math.min(G.W,G.H)); } // frame cluster to fill canvas
+function resetGraph(){ // back to the default view (as on first load), deselect everything
+  G.isolate=null; G.selected=null; G.query='';
+  const gq=document.getElementById('gq'); if(gq) gq.value='';
+  for(const n of G.nodes) n._vis=true;
+  for(const hn of (G.heatNodes||[])) if(hn.el) hn.el.style.display=(G.heat?'':'none');
+  const L=document.getElementById('glegend'); if(L) L.querySelectorAll('.row').forEach(r=>r.classList.remove('off'));
+  if(G.mode==='2d'){ G.autorot=false; G.tgt.rotX=0; G.tgt.rotY=0; G.panTX=0; G.panTY=0; }
+  else { G.autorot=true; G.tgt.rotX=-0.32; G.tgt.rotY=0.4; }
+  G.tgt.dist=G.maxDist||fitDist(); G.cooling=Math.max(G.cooling,0.3); G.needs=true; startGraph();
 }
 function projXYZ(x,y,z){ const {rotX,rotY,dist}=G.cam; const ze=z*(1-G.flatAmt);
   const cY=Math.cos(rotY), sY=Math.sin(rotY), cX=Math.cos(rotX), sX=Math.sin(rotX);
@@ -864,7 +876,8 @@ function stepGraph(){
 let DPR=Math.min(2, window.devicePixelRatio||1);
 function sizeGraphCanvas(){ const cv=gcan(), st=document.getElementById('graphStage');
   G.W=st.clientWidth; G.H=st.clientHeight; DPR=Math.min(2,window.devicePixelRatio||1);
-  cv.width=G.W*DPR; cv.height=G.H*DPR; cv.style.width=G.W+'px'; cv.style.height=G.H+'px'; }
+  cv.width=G.W*DPR; cv.height=G.H*DPR; cv.style.width=G.W+'px'; cv.style.height=G.H+'px';
+  if(G.inited){ G.maxDist=fitDist(); G.tgt.dist=Math.min(G.tgt.dist,G.maxDist); G.cam.dist=Math.min(G.cam.dist,G.maxDist); } }
 function worldHit(mx,my){ let best=null, bd=1e9;
   for(const n of G.nodes){ if(n._vis===false||(G.isolate&&n.p.category!==G.isolate)) continue;
     const dx=n.sx-mx, dy=n.sy-my; const d=dx*dx+dy*dy; const rr=Math.max(7,n.r*n.sc+5)**2;
@@ -899,11 +912,13 @@ function initGraphControls(){
       tip.style.left=tx+'px'; tip.style.top=ty+'px'; st.style.cursor='pointer'; }
     else { tip.style.opacity='0'; st.style.cursor='grab'; } });
   st.addEventListener('mouseleave', ()=>{ tip.style.opacity='0'; if(G.hover){ G.hover=null; G.needs=true; startGraph(); } });
-  st.addEventListener('click', e=>{ if(drag&&drag.moved) return; const r=st.getBoundingClientRect();
-    const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) focusOnNode(n); });
+  st.addEventListener('click', e=>{ if(drag&&drag.moved) return;
+    if(e.target.closest('#glegend, #heatbar')) return; // let the legend/heatbar handle their own clicks
+    const r=st.getBoundingClientRect();
+    const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) focusOnNode(n); else resetGraph(); });
   st.addEventListener('dblclick', e=>{ const r=st.getBoundingClientRect();
     const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) window.open(n.p.url,'_blank','noopener'); });
-  st.addEventListener('wheel', e=>{ e.preventDefault(); G.tgt.dist=Math.max(300,Math.min(1500,G.tgt.dist+e.deltaY*0.6));
+  st.addEventListener('wheel', e=>{ e.preventDefault(); G.tgt.dist=Math.max(120,Math.min(G.maxDist,G.tgt.dist+e.deltaY*0.6));
     G.needs=true; startGraph(); }, {passive:false});
 }
 
@@ -965,12 +980,7 @@ function buildChrome(){
   const hb=gt.querySelector('#ib-heat');
   hb.onclick=()=>{ G.heat=!G.heat; hb.classList.toggle('active',G.heat); hb.dataset.tip='Trending heatmap: '+(G.heat?'on':'off');
     document.getElementById('heatbar').style.display=G.heat?'':'none'; G.needs=true; startGraph(); };
-  gt.querySelector('#ib-reset').onclick=()=>{ G.isolate=null; G.selected=null; G.query='';
-    const gq=document.getElementById('gq'); if(gq) gq.value='';
-    for(const n of G.nodes) n._vis=true; for(const hn of (G.heatNodes||[])) if(hn.el) hn.el.style.display='';
-    document.querySelectorAll('#glegend .row').forEach(r=>r.classList.remove('off'));
-    if(G.mode==='2d'){ G.tgt.rotX=0; G.tgt.rotY=0; G.panTX=0; G.panTY=0; } else { G.autorot=true; G.tgt.rotX=-0.32; G.tgt.rotY=0.4; }
-    G.tgt.dist=700; G.cooling=Math.max(G.cooling,0.4); G.needs=true; startGraph(); };
+  gt.querySelector('#ib-reset').onclick=()=>resetGraph();
 }
 
 // ============================================================ VIEWS
