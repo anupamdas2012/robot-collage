@@ -579,9 +579,15 @@ const CHUE={'Aerial & Drones':30,'Autonomous Driving':52,'Navigation':120,'Simul
   'SLAM & Perception':200,'Framework & Middleware':222,'Learning & Control':268,
   'Manipulation':318,'Legged & Humanoid':352,'Robotics (general)':220};
 const M={inited:false, tiles:[], cols:0, rows:0, cellW:0, cellH:0, W:0, H:0,
-  lx:makeSpring(0,0.5,0.5), ly:makeSpring(0,0.5,0.5), ls:makeSpring(0,0.22,0.72),
+  // deterministic lens state: current + target (no springs/velocity)
+  lx:0, ly:0, lxT:0, lyT:0, ls:0, lsT:0, lastT:0,
   dirty:new Set(), running:false, cat:'All', q:'', chromaOn:true, Lmin:0, Lmax:1,
-  gatherActive:false, gatherAnimating:false};
+  gatherActive:false, gatherAnimating:false, gatherT0:0, gatherDur:520};
+// Deterministic easings (closed-form functions of normalized time t∈[0,1])
+const easeInOutCubic = t => t<0.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+// Exact per-step factor for dv/dt = rate*(target-v): v += (target-v)*(1-e^(-rate*dt)).
+// Frame-rate independent — the same wall-clock elapsed yields the same value regardless of fps.
+const expApproach = (rate, dt) => 1 - Math.exp(-rate*dt);
 function chromaColor(p){ const h=CHUE[p.category]||220, gen=p.category==='Robotics (general)';
   const t=Math.max(0,Math.min(1,(Math.log(p.stars+1)-M.Lmin)/(M.Lmax-M.Lmin)));
   return `hsl(${h} ${gen?10:64}% ${(37+t*39).toFixed(0)}%)`; }
@@ -639,16 +645,16 @@ function buildMosaic(){
     if(i<M.tiles.length) setTimeout(wave,130); })();
   stage.onmousemove=e=>{ if(M.gatherActive||M.gatherAnimating) return; // lens off while gathered
     const r=stage.getBoundingClientRect(); const mx=e.clientX-r.left, my=e.clientY-r.top;
-    if(M.ls.value<0.02){ M.lx.value=M.lx.target=mx; M.ly.value=M.ly.target=my; } // snap on enter
-    else { M.lx.target=mx; M.ly.target=my; }
-    M.ls.target=1; startMosaic(); };
-  stage.onmouseleave=()=>{ M.ls.target=0; startMosaic(); };
+    if(M.ls<0.02){ M.lx=M.lxT=mx; M.ly=M.lyT=my; } // snap on enter
+    else { M.lxT=mx; M.lyT=my; }
+    M.lsT=1; startMosaic(); };
+  stage.onmouseleave=()=>{ M.lsT=0; startMosaic(); };
   M.inited=true;
 }
 function resetTile(t){ t.el.style.transform=t.base; t.el.style.zIndex='';
   if(t._big){ t.el.classList.remove('big'); t._big=false; } }
 function layoutLens(){
-  const s=M.ls.value, cx=M.lx.value, cy=M.ly.value;
+  const s=M.ls, cx=M.lx, cy=M.ly;
   if(s<0.002){ if(M.dirty.size){ M.dirty.forEach(resetTile); M.dirty.clear(); } return; }
   const R=LENS.R, MAG=1+(LENS.MAG-1)*s, cW=M.cellW, cH=M.cellH, next=new Set();
   for(const t of M.tiles){ const dx=t.cx-cx, dy=t.cy-cy; const r=Math.hypot(dx,dy);
@@ -660,11 +666,15 @@ function layoutLens(){
       next.add(t); } }
   M.dirty.forEach(t=>{ if(!next.has(t)) resetTile(t); }); M.dirty=next;
 }
-function startMosaic(){ if(M.running) return; M.running=true; requestAnimationFrame(stepMosaic); }
+function startMosaic(){ if(M.running) return; M.running=true; M.lastT=performance.now(); requestAnimationFrame(stepMosaic); }
 function stepMosaic(){
   if(M.gatherActive || M.gatherAnimating){ if(stepGather()) requestAnimationFrame(stepMosaic); else M.running=false; return; }
-  const a=M.lx.step(), b=M.ly.step(), c=M.ls.step(); layoutLens();
-  if(a||b||c){ requestAnimationFrame(stepMosaic); } else { M.running=false; }
+  const now=performance.now(); let dt=(now-M.lastT)/1000; M.lastT=now; if(!(dt>0)||dt>0.1) dt=1/60;
+  const fc=expApproach(16,dt), fs=expApproach(11,dt); // analytic exponential approach, fps-independent
+  M.lx+=(M.lxT-M.lx)*fc; M.ly+=(M.lyT-M.ly)*fc; M.ls+=(M.lsT-M.ls)*fs;
+  layoutLens();
+  if(Math.abs(M.lxT-M.lx)>0.3 || Math.abs(M.lyT-M.ly)>0.3 || Math.abs(M.lsT-M.ls)>0.003){ requestAnimationFrame(stepMosaic); }
+  else { M.lx=M.lxT; M.ly=M.lyT; M.ls=M.lsT; layoutLens(); M.running=false; }
 }
 function matchTile(t){ const p=t.p;
   return (M.cat==='All'||p.category===M.cat) &&
@@ -677,7 +687,7 @@ function applyGather(){
   if(filtering && matches.length){
     M.gatherActive=true;
     // reset any in-flight lens transforms
-    if(M.dirty.size){ M.dirty.clear(); } M.ls.value=M.ls.target=0;
+    if(M.dirty.size){ M.dirty.clear(); } M.ls=M.lsT=0;
     const n=matches.length, aspect=M.cellW/M.cellH;
     let cols=Math.max(1,Math.round(Math.sqrt(n*(M.W/M.H)/aspect))); cols=Math.min(cols,n);
     let rows=Math.ceil(n/cols);
@@ -693,21 +703,23 @@ function applyGather(){
     M.gatherActive=false;
     for(const t of M.tiles){ t.qcx=t.cx; t.qcy=t.cy; t.qs=1; t.qo=1; }
   }
-  M.gatherAnimating=true; startMosaic();
+  // snapshot starts + start time -> deterministic time-parameterized tween
+  for(const t of M.tiles){ t.sx0=t.acx; t.sy0=t.acy; t.ss0=t.asc; t.so0=t.aop; }
+  M.gatherT0=performance.now(); M.gatherAnimating=true; startMosaic();
 }
 function stepGather(){
-  const cW=M.cellW, cH=M.cellH; let moving=false;
+  const cW=M.cellW, cH=M.cellH;
+  const p=Math.min(1,(performance.now()-M.gatherT0)/M.gatherDur), e=easeInOutCubic(p);
   for(const t of M.tiles){
-    const dx=t.qcx-t.acx, dy=t.qcy-t.acy, ds=t.qs-t.asc, dop=t.qo-t.aop;
-    if(Math.abs(dx)>0.25||Math.abs(dy)>0.25||Math.abs(ds)>0.002||Math.abs(dop)>0.004) moving=true;
-    t.acx+=dx*0.16; t.acy+=dy*0.16; t.asc+=ds*0.16; t.aop+=dop*0.16;
+    t.acx=t.sx0+(t.qcx-t.sx0)*e; t.acy=t.sy0+(t.qcy-t.sy0)*e;
+    t.asc=t.ss0+(t.qs-t.ss0)*e; t.aop=t.so0+(t.qo-t.so0)*e;
     const s=t.asc, st=t.el.style;
     st.transform=`translate(${(t.acx-cW*s/2).toFixed(1)}px,${(t.acy-cH*s/2).toFixed(1)}px) scale(${s.toFixed(3)})`;
     st.opacity=t.aop.toFixed(3); st.zIndex=t._match?200:1;
   }
-  if(!moving){ M.gatherAnimating=false;
+  if(p>=1){ M.gatherAnimating=false;
     if(!M.gatherActive){ for(const t of M.tiles){ const st=t.el.style; st.transform=t.base; st.opacity=''; st.zIndex=''; } } }
-  return moving;
+  return p<1;
 }
 const applyMosaicFilter=applyGather;
 function buildMosaicLegend(){
