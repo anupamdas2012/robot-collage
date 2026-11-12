@@ -971,7 +971,7 @@ function initGraphControls(){
   window.addEventListener('mousemove', e=>{ if(!drag) return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
     if(Math.abs(dx)+Math.abs(dy)>3){ drag.moved=true; G.autorot=false; }
     if(G.mode==='2d'){ G.panTX=drag.px+dx; G.panTY=drag.py+dy; }
-    else { G.tgt.rotY=drag.ry-dx*0.006; G.tgt.rotX=Math.max(-1.45,Math.min(1.45,drag.rx-dy*0.006)); }
+    else { G.tgt.rotY=drag.ry-dx*0.006; G.tgt.rotX=drag.rx-dy*0.006; } // free tumble, no pitch clamp
     G.needs=true; startGraph(); });
   window.addEventListener('mouseup', ()=>{ drag=null; G.dragging=false; });
   st.addEventListener('mousemove', e=>{ if(drag) return; const r=st.getBoundingClientRect();
