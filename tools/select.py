@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / ".context" / "raw"
-CAP = 300
+CAP = 600
 
 STRONG = {
     "ros","ros2","ros-noetic","ros2-humble","ros-melodic","ros-foxy","robot-operating-system",
