@@ -97,7 +97,7 @@
   body.immersive{overflow:hidden}
   body.immersive header, body.immersive footer{display:none}
   body.immersive main{padding:0; max-width:none}
-  .immersive-stage{position:relative; width:100vw; height:calc(100vh - var(--navh,64px));
+  .immersive-stage{position:fixed; inset:0; z-index:1;
     overflow:hidden; background:radial-gradient(1200px 700px at 50% 40%, #12141b, #080a0f 80%)}
 
   /* floating HUD (search + legend), shared by immersive modes */
@@ -161,6 +161,42 @@
   footer{color:var(--muted); font-size:12.5px; line-height:1.6; text-align:center; padding:10px 0 60px}
   footer code{color:var(--ink2)}
   .loading{text-align:center; color:var(--muted); padding:80px 0}
+
+  /* ---- Marble-style floating chrome: icon controls + tooltips, outside the canvas ---- */
+  .ib{position:relative; width:42px; height:42px; display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--line); background:rgba(18,20,26,.72); color:var(--ink2); border-radius:12px;
+    cursor:pointer; backdrop-filter:blur(10px); transition:.15s; padding:0}
+  .ib:hover{color:var(--ink); border-color:var(--b400); background:rgba(26,30,40,.92)}
+  .ib.active{background:var(--b400); color:#06121a; border-color:var(--b400)}
+  .ib svg{width:20px; height:20px; display:block}
+  .ib .val{position:absolute; bottom:3px; right:4px; font-size:8.5px; font-weight:800; letter-spacing:.02em}
+  /* tooltip */
+  [data-tip]{position:relative}
+  [data-tip]:hover::after{content:attr(data-tip); position:absolute; white-space:nowrap; z-index:60;
+    background:#05070b; color:var(--ink); border:1px solid var(--baseline); border-radius:8px;
+    padding:6px 10px; font-size:12px; font-weight:500; pointer-events:none; box-shadow:0 8px 24px -8px rgba(0,0,0,.8)}
+  .tipR[data-tip]:hover::after{left:52px; top:50%; transform:translateY(-50%)}
+  .tipL[data-tip]:hover::after{right:52px; top:50%; transform:translateY(-50%)}
+  .tipD[data-tip]:hover::after{top:50px; left:50%; transform:translateX(-50%)}
+
+  .switcher{position:fixed; top:16px; left:16px; z-index:40; display:flex; flex-direction:column; gap:8px}
+  .switcher .brand{font-size:11px; font-weight:800; letter-spacing:.06em; color:var(--muted);
+    text-transform:uppercase; writing-mode:vertical-rl; transform:rotate(180deg); align-self:center; margin-top:4px; display:none}
+  .toolbar{position:fixed; top:16px; right:16px; z-index:40; display:flex; flex-direction:column; gap:8px}
+  .toolbar .sep{height:1px; background:var(--line); margin:3px 4px}
+  .sbox{position:fixed; top:16px; left:50%; transform:translateX(-50%); z-index:40;
+    display:flex; align-items:center; gap:8px; background:rgba(18,20,26,.72); border:1px solid var(--line);
+    border-radius:999px; padding:8px 14px; backdrop-filter:blur(10px); min-width:300px}
+  .sbox svg{width:16px; height:16px; color:var(--muted); flex:none}
+  .sbox input{border:0; background:transparent; color:var(--ink); outline:none; font-size:13.5px; width:100%}
+  .sbox input::placeholder{color:var(--muted)}
+  .sbox .meta{font-size:11px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums}
+  /* growth top bar uses the switcher; give the scroll page room */
+  body:not(.immersive) header{padding-top:66px}
+  .viewhint{position:fixed; left:50%; bottom:14px; transform:translateX(-50%); z-index:30;
+    font-size:11.5px; color:var(--muted); background:rgba(5,7,11,.5); border:1px solid var(--line);
+    padding:5px 12px; border-radius:999px; backdrop-filter:blur(8px); pointer-events:none}
+  @media(max-width:720px){ .sbox{min-width:0; width:46vw} .switcher{top:10px;left:10px} .toolbar{top:10px;right:10px} }
 </style>
 </head>
 <body>
@@ -173,15 +209,7 @@
   </div>
 </header>
 
-<nav class="views">
-  <div class="wrap">
-    <button class="vbtn active" data-view="growth">📈 Growth &amp; Analytics</button>
-    <button class="vbtn" data-view="collage">🖼️ Project Collage</button>
-    <button class="vbtn" data-view="graph">🕸️ Topic Explorer</button>
-    <span class="spacer"></span>
-    <span class="asof" id="navnote"></span>
-  </div>
-</nav>
+<div class="switcher" id="switcher"></div>
 
 <main class="wrap">
   <section class="view active" id="view-growth">
@@ -192,18 +220,12 @@
 
   <section class="view" id="view-collage">
     <div class="immersive-stage" id="collageStage">
-      <div class="hud top">
-        <input id="q" type="search" placeholder="Search to spotlight…" autocomplete="off">
-        <select id="fcat"></select>
-        <span class="seg2" id="mchromaseg">
-          <button data-v="on" class="active">Chroma</button>
-          <button data-v="off">Images</button>
-        </span>
-        <span class="hint">Hover = magnifier · click = open repo · hue = sub-field · brightness = stars</span>
-      </div>
       <div id="mosaic"></div>
       <div class="glegend" id="mlegend"></div>
     </div>
+    <div class="sbox" id="csearch"></div>
+    <div class="toolbar" id="ctoolbar"></div>
+    <div class="viewhint">Hover to magnify · click a tile to open its repo</div>
   </section>
 
   <section class="view" id="view-graph">
@@ -211,22 +233,6 @@
       <canvas id="heatCanvas"></canvas>
       <div id="heatLayer"></div>
       <canvas id="graphCanvas"></canvas>
-      <div class="hud top">
-        <input id="gq" type="search" placeholder="Search projects…" autocomplete="off">
-        <span class="seg2" id="gmodeseg">
-          <button data-v="3d" class="active">3D</button>
-          <button data-v="2d">2D</button>
-        </span>
-        <span class="seg2" id="gsizeseg">
-          <button data-v="contributors" class="active">Size: contributors</button>
-          <button data-v="stars">stars</button>
-        </span>
-        <span class="seg2" id="gheatseg">
-          <button data-v="on" class="active">Trending heatmap: on</button>
-          <button data-v="off">off</button>
-        </span>
-        <span class="hint">Drag to orbit · scroll to zoom · click to center · type to reshape</span>
-      </div>
       <div class="glegend" id="glegend"></div>
       <div class="heatbar" id="heatbar">Trending intensity
         <div class="grad"></div>
@@ -234,6 +240,9 @@
       </div>
       <div class="gtip" id="gtip"></div>
     </div>
+    <div class="sbox" id="gsearch"></div>
+    <div class="toolbar" id="gtoolbar"></div>
+    <div class="viewhint">Drag to orbit · scroll to zoom · click to center · double-click to open</div>
   </section>
 </main>
 
@@ -300,8 +309,6 @@ function renderTiles(){
     `<div class="tile"><div class="v">${x.v}</div><div class="k">${x.k}</div></div>`).join('');
   document.getElementById('asof').innerHTML =
     `Snapshot generated <b>${esc(DATA.generated)}</b> · live from the GitHub API`;
-  document.getElementById('navnote').textContent =
-    `${fmtN(t.repos)} projects · ${fmtK(t.stars)}★`;
 }
 
 // ---------- horizontal bar chart (magnitude, single hue)
@@ -664,17 +671,7 @@ function buildMosaicLegend(){
     `<div class="ttl" style="margin-top:7px">Lightness = stars</div><div class="ramp"></div>`+
     `<div class="row" style="justify-content:space-between;cursor:default;margin-top:2px"><span style="font-size:10px;color:var(--muted)">fewer ★</span><span style="font-size:10px;color:var(--muted)">more ★</span></div>`;
 }
-function initCollageControls(){
-  const sel=document.getElementById('fcat');
-  sel.innerHTML=['All',...DATA.catOrder.filter(c=>DATA.repos.some(r=>r.category===c))]
-    .map(c=>`<option value="${esc(c)}">${c==='All'?'All sub-fields':esc(c)}</option>`).join('');
-  sel.onchange=e=>{ M.cat=e.target.value; applyMosaicFilter(); };
-  document.getElementById('q').addEventListener('input', e=>{ M.q=e.target.value.trim().toLowerCase(); applyMosaicFilter(); });
-  document.getElementById('mchromaseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
-    M.chromaOn=b.dataset.v==='on'; document.querySelectorAll('#mchromaseg button').forEach(x=>x.classList.toggle('active',x===b));
-    document.getElementById('collageStage').classList.toggle('chroma', M.chromaOn);
-    document.getElementById('mlegend').style.display=M.chromaOn?'':'none'; };
-}
+// (collage controls are built by buildChrome)
 
 // ============================================================ TOPIC GRAPH (3D / TRON) + HEATMAP
 const FOV=820, R0=240, DOFW=430;
@@ -908,34 +905,83 @@ function initGraphControls(){
     const n=worldHit(e.clientX-r.left, e.clientY-r.top); if(n) window.open(n.p.url,'_blank','noopener'); });
   st.addEventListener('wheel', e=>{ e.preventDefault(); G.tgt.dist=Math.max(300,Math.min(1500,G.tgt.dist+e.deltaY*0.6));
     G.needs=true; startGraph(); }, {passive:false});
-  document.getElementById('gmodeseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
-    G.mode=b.dataset.v; document.querySelectorAll('#gmodeseg button').forEach(x=>x.classList.toggle('active',x===b));
-    G.flatTarget=(G.mode==='2d')?1:0;
-    if(G.mode==='2d'){ G.autorot=false; G.tgt.rotX=0; G.tgt.rotY=0; G.panTX=0; G.panTY=0; }
-    else { G.autorot=true; G.tgt.rotX=-0.32; }
-    if(G.selected) focusOnNode(G.selected);
-    G.needs=true; startGraph(); };
-  document.getElementById('gsizeseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
-    G.sizeKey=b.dataset.v; document.querySelectorAll('#gsizeseg button').forEach(x=>x.classList.toggle('active',x===b));
-    G.maxSize=Math.max(1,...DATA.repos.map(p=>sizeVal(p,G.sizeKey))); for(const n of G.nodes) n.r=nodeR(n.p); computeLabels();
-    G.needs=true; startGraph(); };
-  document.getElementById('gheatseg').onclick=e=>{ const b=e.target.closest('button'); if(!b) return;
-    G.heat=b.dataset.v==='on'; document.querySelectorAll('#gheatseg button').forEach(x=>x.classList.toggle('active',x===b));
+}
+
+// ============================================================ CHROME (floating icon controls + tooltips)
+const SW='stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"';
+const ICONS={
+  growth:`<svg viewBox="0 0 24 24" ${SW}><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>`,
+  collage:`<svg viewBox="0 0 24 24" ${SW}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
+  graph:`<svg viewBox="0 0 24 24" ${SW}><circle cx="12" cy="12" r="2.4"/><circle cx="5" cy="6" r="1.8"/><circle cx="19" cy="7" r="1.8"/><circle cx="6" cy="18" r="1.8"/><circle cx="18" cy="17" r="1.8"/><path d="M11 11L6 7m7 1l5-1M11 13l-4 4m7-3l3 2"/></svg>`,
+  search:`<svg viewBox="0 0 24 24" ${SW}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>`,
+  chroma:`<svg viewBox="0 0 24 24" ${SW}><path d="M12 3c5 0 9 3.6 9 8 0 2.8-2.2 4-4 4h-1.5c-1 0-1.5.8-1.5 1.6 0 .5.3 1 .6 1.4.3.4.4.7.4 1 0 .8-.7 1-1.5 1C8.6 21 3 17 3 11.5 3 6.8 7 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="11" r="1"/></svg>`,
+  cube:`<svg viewBox="0 0 24 24" ${SW}><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9z"/><path d="M12 2v18M4 6.5l8 4.5 8-4.5"/></svg>`,
+  size:`<svg viewBox="0 0 24 24" ${SW}><circle cx="8" cy="12" r="5.5"/><circle cx="17" cy="12" r="2.5"/></svg>`,
+  flame:`<svg viewBox="0 0 24 24" ${SW}><path d="M12 3c1 3-2 4-2 7a3 3 0 006 0c0-1.3-.6-2.2-1-3 2 1 4 3.3 4 6a6 6 0 01-12 0c0-3.6 3-5.6 5-10z"/></svg>`,
+  reset:`<svg viewBox="0 0 24 24" ${SW}><path d="M3 12a9 9 0 109-9 9 9 0 00-7 3.3M3 3v4.3H7"/></svg>`,
+};
+function buildChrome(){
+  const sw=document.getElementById('switcher');
+  sw.innerHTML=[['growth','Growth & Analytics',ICONS.growth],['collage','Project Collage',ICONS.collage],['graph','Topic Explorer',ICONS.graph]]
+    .map(([v,t,ic])=>`<button class="ib tipR${v==='growth'?' active':''}" data-view="${v}" data-tip="${t}">${ic}</button>`).join('');
+  sw.onclick=e=>{ const b=e.target.closest('.ib'); if(b) showView(b.dataset.view); };
+
+  // collage: floating search + sub-field filter
+  const cs=document.getElementById('csearch');
+  cs.innerHTML=`${ICONS.search}<input id="q" type="search" placeholder="Search to spotlight…" autocomplete="off">`+
+    `<select id="fcat" class="meta" style="border:0;background:transparent;cursor:pointer"></select>`;
+  const fcat=cs.querySelector('#fcat');
+  fcat.innerHTML=['All',...DATA.catOrder.filter(c=>DATA.repos.some(r=>r.category===c))]
+    .map(c=>`<option value="${esc(c)}">${c==='All'?'All sub-fields':esc(c)}</option>`).join('');
+  fcat.onchange=e=>{ M.cat=e.target.value; applyMosaicFilter(); };
+  cs.querySelector('#q').addEventListener('input', e=>{ M.q=e.target.value.trim().toLowerCase(); applyMosaicFilter(); });
+  // collage toolbar
+  const ct=document.getElementById('ctoolbar');
+  ct.innerHTML=`<button class="ib tipL${M.chromaOn?' active':''}" id="ib-chroma" data-tip="Chroma field · click for images">${ICONS.chroma}</button>`;
+  const cb=ct.querySelector('#ib-chroma');
+  cb.onclick=()=>{ M.chromaOn=!M.chromaOn; cb.classList.toggle('active',M.chromaOn);
+    document.getElementById('collageStage').classList.toggle('chroma',M.chromaOn);
+    document.getElementById('mlegend').style.display=M.chromaOn?'':'none';
+    cb.dataset.tip=M.chromaOn?'Chroma field · click for images':'Photo collage · click for chroma'; };
+
+  // graph: floating search
+  document.getElementById('gsearch').innerHTML=`${ICONS.search}<input id="gq" type="search" placeholder="Search to reshape the network…" autocomplete="off">`;
+  document.getElementById('gsearch').querySelector('#gq').addEventListener('input', e=>applyQuery(e.target.value.trim().toLowerCase()));
+  // graph toolbar
+  const gt=document.getElementById('gtoolbar');
+  gt.innerHTML=
+    `<button class="ib tipL" id="ib-mode" data-tip="Switch to 2D"><span class="val">3D</span>${ICONS.cube}</button>`+
+    `<button class="ib tipL" id="ib-size" data-tip="Node size: contributors">${ICONS.size}</button>`+
+    `<button class="ib tipL active" id="ib-heat" data-tip="Trending heatmap: on">${ICONS.flame}</button>`+
+    `<div class="sep"></div><button class="ib tipL" id="ib-reset" data-tip="Reset view">${ICONS.reset}</button>`;
+  const mb=gt.querySelector('#ib-mode');
+  mb.onclick=()=>{ G.mode=(G.mode==='3d')?'2d':'3d'; mb.querySelector('.val').textContent=G.mode.toUpperCase();
+    mb.dataset.tip=(G.mode==='3d')?'Switch to 2D':'Switch to 3D'; G.flatTarget=(G.mode==='2d')?1:0;
+    if(G.mode==='2d'){ G.autorot=false; G.tgt.rotX=0; G.tgt.rotY=0; G.panTX=0; G.panTY=0; } else { G.autorot=true; G.tgt.rotX=-0.32; }
+    if(G.selected) focusOnNode(G.selected); G.needs=true; startGraph(); };
+  const szb=gt.querySelector('#ib-size');
+  szb.onclick=()=>{ G.sizeKey=(G.sizeKey==='contributors')?'stars':'contributors'; szb.dataset.tip='Node size: '+G.sizeKey;
+    G.maxSize=Math.max(1,...DATA.repos.map(p=>sizeVal(p,G.sizeKey))); for(const n of G.nodes) n.r=nodeR(n.p); computeLabels(); G.needs=true; startGraph(); };
+  const hb=gt.querySelector('#ib-heat');
+  hb.onclick=()=>{ G.heat=!G.heat; hb.classList.toggle('active',G.heat); hb.dataset.tip='Trending heatmap: '+(G.heat?'on':'off');
     document.getElementById('heatbar').style.display=G.heat?'':'none'; G.needs=true; startGraph(); };
-  document.getElementById('gq').addEventListener('input', e=>{ applyQuery(e.target.value.trim().toLowerCase()); });
+  gt.querySelector('#ib-reset').onclick=()=>{ G.isolate=null; G.selected=null; G.query='';
+    const gq=document.getElementById('gq'); if(gq) gq.value='';
+    for(const n of G.nodes) n._vis=true; for(const hn of (G.heatNodes||[])) if(hn.el) hn.el.style.display='';
+    document.querySelectorAll('#glegend .row').forEach(r=>r.classList.remove('off'));
+    if(G.mode==='2d'){ G.tgt.rotX=0; G.tgt.rotY=0; G.panTX=0; G.panTY=0; } else { G.autorot=true; G.tgt.rotX=-0.32; G.tgt.rotY=0.4; }
+    G.tgt.dist=700; G.cooling=Math.max(G.cooling,0.4); G.needs=true; startGraph(); };
 }
 
 // ============================================================ VIEWS
 function showView(v){
-  document.querySelectorAll('.vbtn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));
+  document.querySelectorAll('#switcher .ib').forEach(x=>x.classList.toggle('active',x.dataset.view===v));
   ['growth','collage','graph'].forEach(k=>document.getElementById('view-'+k).classList.toggle('active',k===v));
   document.body.classList.toggle('immersive', v!=='growth');
-  setNavH();
   if(v==='collage'){ if(!M.inited) buildMosaic(); else computeMosaicGrid(); }
   if(v==='graph'){ sizeGraphCanvas(); if(!G.inited) buildGraph(); else { G.needs=true; startGraph(); } }
   if(v==='growth') window.scrollTo({top:0,behavior:'smooth'});
 }
-document.querySelectorAll('.vbtn').forEach(b=>b.addEventListener('click', ()=>showView(b.dataset.view)));
 let rz; window.addEventListener('resize', ()=>{ clearTimeout(rz); rz=setTimeout(()=>{ setNavH();
   if(document.getElementById('view-collage').classList.contains('active') && M.inited) computeMosaicGrid();
   if(document.getElementById('view-graph').classList.contains('active') && G.inited){ sizeGraphCanvas(); G.needs=true; startGraph(); } }, 160); });
@@ -947,7 +993,7 @@ function boot(){
       '<div class="loading">No data yet. Run <code>bash tools/collect.sh &amp;&amp; python3 -I tools/build.py</code>.</div>';
     return;
   }
-  setNavH(); renderTiles(); renderCharts(); initCollageControls(); initGraphControls();
+  renderTiles(); renderCharts(); buildChrome(); initGraphControls();
 }
 boot();
 </script>
