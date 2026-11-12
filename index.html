@@ -580,7 +580,8 @@ const CHUE={'Aerial & Drones':30,'Autonomous Driving':52,'Navigation':120,'Simul
   'Manipulation':318,'Legged & Humanoid':352,'Robotics (general)':220};
 const M={inited:false, tiles:[], cols:0, rows:0, cellW:0, cellH:0, W:0, H:0,
   lx:makeSpring(0,0.5,0.5), ly:makeSpring(0,0.5,0.5), ls:makeSpring(0,0.22,0.72),
-  dirty:new Set(), running:false, cat:'All', q:'', chromaOn:true, Lmin:0, Lmax:1};
+  dirty:new Set(), running:false, cat:'All', q:'', chromaOn:true, Lmin:0, Lmax:1,
+  gatherActive:false, gatherAnimating:false};
 function chromaColor(p){ const h=CHUE[p.category]||220, gen=p.category==='Robotics (general)';
   const t=Math.max(0,Math.min(1,(Math.log(p.stars+1)-M.Lmin)/(M.Lmax-M.Lmin)));
   return `hsl(${h} ${gen?10:64}% ${(37+t*39).toFixed(0)}%)`; }
@@ -603,8 +604,11 @@ function computeMosaicGrid(){
   M.tiles.forEach((t,i)=>{ t.c=Math.floor(i/M.rows); t.r=i%M.rows;
     t.tlx=t.c*M.cellW; t.tly=t.r*M.cellH; t.cx=t.tlx+M.cellW/2; t.cy=t.tly+M.cellH/2;
     t.base=`translate(${t.tlx.toFixed(1)}px,${t.tly.toFixed(1)}px)`;
+    // gather animation state (current + target center/scale/opacity)
+    t.acx=t.cx; t.acy=t.cy; t.asc=1; t.aop=1; t.qcx=t.cx; t.qcy=t.cy; t.qs=1; t.qo=1; t._match=false;
     const st=t.el.style; st.width=M.cellW.toFixed(2)+'px'; st.height=M.cellH.toFixed(2)+'px';
-    st.transform=t.base; st.zIndex=''; t._big=false; t.el.classList.remove('big'); });
+    st.transform=t.base; st.zIndex=''; st.opacity=''; t._big=false; t.el.classList.remove('big'); });
+  if(M.gatherActive) applyGather(); // keep the sub-collage framed after a resize
 }
 function buildMosaic(){
   const stage=document.getElementById('collageStage');
@@ -633,7 +637,8 @@ function buildMosaic(){
     const img=new Image(); img.onload=(function(t){return ()=>{ t.el.style.backgroundImage=`url("${t.og}")`;
       const ph=t.el.querySelector('.ph'); if(ph) ph.remove(); };})(t); img.src=t.og; }
     if(i<M.tiles.length) setTimeout(wave,130); })();
-  stage.onmousemove=e=>{ const r=stage.getBoundingClientRect(); const mx=e.clientX-r.left, my=e.clientY-r.top;
+  stage.onmousemove=e=>{ if(M.gatherActive||M.gatherAnimating) return; // lens off while gathered
+    const r=stage.getBoundingClientRect(); const mx=e.clientX-r.left, my=e.clientY-r.top;
     if(M.ls.value<0.02){ M.lx.value=M.lx.target=mx; M.ly.value=M.ly.target=my; } // snap on enter
     else { M.lx.target=mx; M.ly.target=my; }
     M.ls.target=1; startMosaic(); };
@@ -656,13 +661,55 @@ function layoutLens(){
   M.dirty.forEach(t=>{ if(!next.has(t)) resetTile(t); }); M.dirty=next;
 }
 function startMosaic(){ if(M.running) return; M.running=true; requestAnimationFrame(stepMosaic); }
-function stepMosaic(){ const a=M.lx.step(), b=M.ly.step(), c=M.ls.step(); layoutLens();
-  if(a||b||c){ requestAnimationFrame(stepMosaic); } else { M.running=false; } }
-function applyMosaicFilter(){ const q=M.q, cat=M.cat;
-  for(const t of M.tiles){ const p=t.p;
-    const ok=(cat==='All'||p.category===cat) &&
-      (!q || (p.full_name+' '+p.desc+' '+(p.topics||[]).join(' ')+' '+p.language).toLowerCase().includes(q));
-    t.el.classList.toggle('dim', !ok); } }
+function stepMosaic(){
+  if(M.gatherActive || M.gatherAnimating){ if(stepGather()) requestAnimationFrame(stepMosaic); else M.running=false; return; }
+  const a=M.lx.step(), b=M.ly.step(), c=M.ls.step(); layoutLens();
+  if(a||b||c){ requestAnimationFrame(stepMosaic); } else { M.running=false; }
+}
+function matchTile(t){ const p=t.p;
+  return (M.cat==='All'||p.category===M.cat) &&
+    (!M.q || (p.full_name+' '+p.desc+' '+(p.topics||[]).join(' ')+' '+p.language).toLowerCase().includes(M.q)); }
+// Search / filter: gather matches into a centered sub-collage; clearing flies them home.
+function applyGather(){
+  const filtering = !!M.q || (M.cat && M.cat!=='All');
+  for(const t of M.tiles) t._match=false;
+  const matches = filtering ? M.tiles.filter(matchTile) : [];
+  if(filtering && matches.length){
+    M.gatherActive=true;
+    // reset any in-flight lens transforms
+    if(M.dirty.size){ M.dirty.clear(); } M.ls.value=M.ls.target=0;
+    const n=matches.length, aspect=M.cellW/M.cellH;
+    let cols=Math.max(1,Math.round(Math.sqrt(n*(M.W/M.H)/aspect))); cols=Math.min(cols,n);
+    let rows=Math.ceil(n/cols);
+    const availW=M.W*0.84, availH=M.H*0.82;
+    let cellH2=Math.min(availH/rows, (availW/cols)/aspect), cellW2=cellH2*aspect;
+    const gap=Math.max(2, Math.min(cellW2,cellH2)*0.08);
+    const stepX=cellW2+gap, stepY=cellH2+gap, gridW=cols*stepX, gridH=rows*stepY;
+    const ox=(M.W-gridW)/2+stepX/2, oy=(M.H-gridH)/2+stepY/2;
+    matches.forEach((t,i)=>{ const c=i%cols, r=Math.floor(i/cols);
+      t.qcx=ox+c*stepX; t.qcy=oy+r*stepY; t.qs=cellW2/M.cellW; t.qo=1; t._match=true; });
+    for(const t of M.tiles){ if(t._match) continue; t.qcx=t.cx; t.qcy=t.cy; t.qs=0.88; t.qo=0.05; }
+  } else {
+    M.gatherActive=false;
+    for(const t of M.tiles){ t.qcx=t.cx; t.qcy=t.cy; t.qs=1; t.qo=1; }
+  }
+  M.gatherAnimating=true; startMosaic();
+}
+function stepGather(){
+  const cW=M.cellW, cH=M.cellH; let moving=false;
+  for(const t of M.tiles){
+    const dx=t.qcx-t.acx, dy=t.qcy-t.acy, ds=t.qs-t.asc, dop=t.qo-t.aop;
+    if(Math.abs(dx)>0.25||Math.abs(dy)>0.25||Math.abs(ds)>0.002||Math.abs(dop)>0.004) moving=true;
+    t.acx+=dx*0.16; t.acy+=dy*0.16; t.asc+=ds*0.16; t.aop+=dop*0.16;
+    const s=t.asc, st=t.el.style;
+    st.transform=`translate(${(t.acx-cW*s/2).toFixed(1)}px,${(t.acy-cH*s/2).toFixed(1)}px) scale(${s.toFixed(3)})`;
+    st.opacity=t.aop.toFixed(3); st.zIndex=t._match?200:1;
+  }
+  if(!moving){ M.gatherAnimating=false;
+    if(!M.gatherActive){ for(const t of M.tiles){ const st=t.el.style; st.transform=t.base; st.opacity=''; st.zIndex=''; } } }
+  return moving;
+}
+const applyMosaicFilter=applyGather;
 function buildMosaicLegend(){
   const L=document.getElementById('mlegend'); if(!L) return;
   const ho=catHueOrder();
