@@ -888,7 +888,7 @@ function focusOnNode(n){ if(!n) return; G.selected=n; G.autorot=false;
     G.tgt.rotY=Math.atan2(-n.x,n.z)+Math.PI; G.tgt.rotX=Math.atan2(-n.y,h); G.tgt.dist=Math.max(430,L*2.1); }
   G.needs=true; startGraph(); }
 
-function drawGraph(){
+function drawGraph(lod){
   const cv=gcan(), ctx=cv.getContext('2d');
   ctx.setTransform(DPR,0,0,DPR,0,0);
   // TRON backdrop
@@ -902,6 +902,13 @@ function drawGraph(){
   for(const n of G.nodes) project(n);
   const iso=G.isolate, hv=G.hover, sel=G.selected;
   const vis=n=> n._vis!==false && (!iso||n.p.category===iso);
+  // ---- LOD: while dragging / settling / flying, draw flat dots only (skip glow, arcs, heat)
+  if(lod){ ctx.globalCompositeOperation='source-over';
+    for(const n of G.nodes){ if(!vis(n)) continue; const sr=Math.max(1.2,n.r*n.sc*0.9);
+      ctx.fillStyle=catColor(n.p.category); ctx.beginPath(); ctx.arc(n.sx,n.sy,sr,0,6.2832); ctx.fill(); }
+    if(sel&&vis(sel)){ const sr=Math.max(2,sel.r*sel.sc); ctx.strokeStyle='#8fe8ff'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(sel.sx,sel.sy,sr+6,0,6.2832); ctx.stroke(); }
+    document.getElementById('heatLayer').classList.add('off'); return; }
   const neigh=new Set(); const anchor=hv||sel;
   if(anchor){ neigh.add(anchor); for(const e of G.edges){ const a=G.nodes[e.a],b=G.nodes[e.b];
     if(a===anchor)neigh.add(b); if(b===anchor)neigh.add(a); } }
@@ -941,12 +948,15 @@ function drawGraph(){
   for(const n of lab){ if(!vis(n)) continue; const sr=Math.max(1,n.r*n.sc);
     ctx.lineWidth=3.5; ctx.strokeStyle='rgba(4,8,14,0.9)'; ctx.fillStyle=(n===anchor)?'#bfefff':'#dbe7f2';
     ctx.strokeText(n.p.name, n.sx, n.sy-sr-7); ctx.fillText(n.p.name, n.sx, n.sy-sr-7); }
-  updateHeat();
+  // heat goo filter is GPU-costly -> refresh every other frame (or immediately when toggled off)
+  if(!G.heat || (heatSkip=(heatSkip+1)&1)===0) updateHeat();
 }
+let heatSkip=0;
 function startGraph(){ if(G.raf) return; G.raf=requestAnimationFrame(stepGraph); }
 function stepGraph(){
   let busy=false;
-  if(G.cooling>0.002){ tickGraph(G.cooling); G.cooling*=0.976; busy=true; G.needs=true; }
+  // multiple physics ticks per frame -> settles in fewer wall-clock frames (same O(n^2) accuracy)
+  if(G.cooling>0.002){ for(let s=0;s<3 && G.cooling>0.002;s++){ tickGraph(G.cooling); G.cooling*=0.976; } busy=true; G.needs=true; }
   else if(G.fitPending){ measureFit(); G.fitPending=false; G.maxDist=fitDist(); G.tgt.dist=G.maxDist; busy=true; G.needs=true; }
   // gentle auto-rotate advances the TARGET so the motion stays smoothed
   if(G.autorot && !G.dragging && !G.hover && G.mode==='3d') G.tgt.rotY+=0.0015;
@@ -957,7 +967,7 @@ function stepGraph(){
   if(dr>0.0005){ c.rotX+=(t.rotX-c.rotX)*S; c.rotY+=(t.rotY-c.rotY)*S; c.dist+=(t.dist-c.dist)*S;
     G.panX+=(G.panTX-G.panX)*S; G.panY+=(G.panTY-G.panY)*S; G.flatAmt+=(G.flatTarget-G.flatAmt)*0.09;
     busy=true; G.needs=true; }
-  if(G.needs){ drawGraph(); G.needs=false; }
+  if(G.needs){ const lod = G.dragging || G.cooling>0.03 || dr>0.02; drawGraph(lod); G.needs=false; }
   if(busy){ G.raf=requestAnimationFrame(stepGraph); } else { G.raf=null; }
 }
 let DPR=Math.min(2, window.devicePixelRatio||1);
